@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+@theme {
+  /* Branding Colors */
+  --color-neo-blue: #0ea5e9;
+  --color-neo-dark: #0f172a;
+  --color-neo-success: #10b981;
+  --color-neo-danger: #ef4444;
+  --color-neo-bg: #f8fafc;
+
+  /* Custom Shadows */
+  --shadow-neo: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+}
+
+/* Base styles to make the app look clean */
+@layer base {
+  body {
+    @apply bg-neo-bg text-slate-900;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+}
