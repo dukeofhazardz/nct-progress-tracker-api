@@ -12,23 +12,45 @@ datasource db {
   provider = "postgresql"
 }
 
-
-enum Role {
-  ADMIN
-  INSTRUCTOR
-}
-
-model User {
-  id        String  @id @default(uuid())
-  email     String  @unique
-  password  String
-  firstName String?
-  lastName  String?
-
-  role Role @default(INSTRUCTOR)
+model Instructor {
+  id           String      @id @default(uuid())
+  email        String      @unique
+  password     String
+  firstName    String?
+  lastName     String?
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  cohorts      Cohort[]    @relation("InstructorCohorts")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([email])
+}
+
+model Department {
+  id      String   @id @default(uuid())
+  name    String   @unique
+  cohorts Cohort[]
+
+  instructors Instructor[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+}
+
+model Cohort {
+  id           String     @id @default(uuid())
+  name         String     @unique
+  instructorId String
+  instructor   Instructor @relation("InstructorCohorts", fields: [instructorId], references: [id])
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
 }

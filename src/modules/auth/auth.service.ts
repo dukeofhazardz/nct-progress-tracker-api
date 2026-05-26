@@ -2,24 +2,49 @@ import { prisma } from "../../lib/prisma";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
 
-export const register = async (data: any) => {
-    const hashed = await bcrypt.hash(data.password, 10);
-
-    return prisma.user.create({
-        data: {
-            email: data.email,
-            password: hashed
-        }
-    });
+type InstructorData = {
+    firstName: string;
+    lastName: string;
+    email: string;
+    password: string;
 };
 
-export const login = async ({ email, password }: any) => {
-    const user = await prisma.user.findUnique({ where: { email } });
+export const registerInstructorService = async (data: InstructorData) => {
+    const hashed = await bcrypt.hash(data.password, 10);
+    if (!hashed) {
+        throw new Error("Error hashing password");
+    }
 
-    if (!user) throw new Error("User not found");
+    const existingInstructor = await prisma.instructor.findUnique({ where: { email: data.email } });
+    if (existingInstructor) {
+        throw new Error("Instructor with this email already exists");
+    }
 
-    const valid = await bcrypt.compare(password, user.password);
-    if (!valid) throw new Error("Invalid password");
+    const instructor = await prisma.instructor.create({
+        data: {
+            firstName: data.firstName,
+            lastName: data.lastName,
+            email: data.email,
+            password: hashed,
+        },
+    });
 
-    return jwt.sign({ id: user.id }, process.env.JWT_SECRET!);
+    const token = jwt.sign({ id: instructor.id }, process.env.JWT_SECRET!);
+    const { password: _password, ...safeInstructor } = instructor;
+    return { token, safeInstructor, message: "Instructor registered successfully" };
+};
+
+export const loginInstructorService = async ({ email, password }: any) => {
+    const instructor = await prisma.instructor.findUnique({ where: { email } });
+    if (!instructor) {
+        throw new Error("Invalid instructor credentials");
+    }
+
+    const isMatch = await bcrypt.compare(password, instructor.password);
+    if (!isMatch) {
+        throw new Error("Invalid instructor credentials");
+    }
+
+    const token = jwt.sign({ id: instructor.id }, process.env.JWT_SECRET!);
+    return { token };
 };

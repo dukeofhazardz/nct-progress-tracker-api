@@ -4,6 +4,8 @@ import morgan from "morgan";
 import helmet from "helmet";
 
 import authRoutes from "./modules/auth/auth.routes";
+import departmentRoutes from "./modules/department/department.routes";
+import cohortRoutes from "./modules/cohort/cohort.routes";
 
 const app = express();
 
@@ -13,5 +15,7 @@ app.use(helmet());
 app.use(morgan("dev"));
 
 app.use("/api/auth", authRoutes);
+app.use("/api/department", departmentRoutes);
+app.use("/api/cohort", cohortRoutes);
 
 export default app;
