@@ -21,22 +21,20 @@ model Instructor {
   departmentId String?
   department   Department? @relation(fields: [departmentId], references: [id])
   cohorts      Cohort[]    @relation("InstructorCohorts")
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
 
   @@index([email])
 }
 
 model Department {
-  id      String   @id @default(uuid())
-  name    String   @unique
-  cohorts Cohort[]
-
+  id          String       @id @default(uuid())
+  name        String       @unique
+  cohorts     Cohort[]
   instructors Instructor[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  curriculum  Curriculum[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
   @@index([name])
 }
@@ -45,12 +43,26 @@ model Cohort {
   id           String     @id @default(uuid())
   name         String     @unique
   instructorId String
+  departmentId String
   instructor   Instructor @relation("InstructorCohorts", fields: [instructorId], references: [id])
+  department   Department @relation(fields: [departmentId], references: [id])
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([name])
+}
+
+model Curriculum {
+  id           String     @id @default(uuid())
+  name         String     @unique
+  fileName     String
+  fileType     String
+  filePath     String
+  uploadedBy   String
   departmentId String
   department   Department @relation(fields: [departmentId], references: [id])
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
   @@index([name])
 }

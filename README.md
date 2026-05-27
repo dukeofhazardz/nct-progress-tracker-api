@@ -33,6 +33,14 @@ A Node.js/Express backend for tracking learning progress across Neo Cloud Tech. 
 | GET | `/api/cohort/:id` | Get cohort by ID |
 | GET | `/api/cohort` | List all cohorts |
 
+### Curriculum
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/curriculum` | Upload curriculum PDF (Admin only) |
+| GET | `/api/curriculum/:id` | Get curriculum by ID |
+| GET | `/api/curriculum/department/:departmentId` | Get all curricula for a department |
+| GET | `/api/curriculum` | List all curricula |
+
 ## Setup
 
 ```bash
