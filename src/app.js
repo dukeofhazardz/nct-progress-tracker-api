@@ -2,23 +2,18 @@ import express from "express";
 import cors from "cors";
 import morgan from "morgan";
 import helmet from "helmet";
-
 import authRoutes from "./modules/auth/auth.routes";
 import departmentRoutes from "./modules/department/department.routes";
 import cohortRoutes from "./modules/cohort/cohort.routes";
 import curriculumRoutes from "./modules/curriculum/curriculum.routes";
-
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 app.use(helmet());
 app.use(morgan("dev"));
 app.use(express.static("public"));
-
 app.use("/api/auth", authRoutes);
 app.use("/api/department", departmentRoutes);
 app.use("/api/cohort", cohortRoutes);
 app.use("/api/curriculum", curriculumRoutes);
-
 export default app;

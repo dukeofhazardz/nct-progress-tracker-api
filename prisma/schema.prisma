@@ -33,6 +33,7 @@ model Department {
   cohorts     Cohort[]
   instructors Instructor[]
   curriculum  Curriculum[]
+  syllabi     Syllabus[]
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
@@ -65,4 +66,19 @@ model Curriculum {
   updatedAt    DateTime   @updatedAt
 
   @@index([name])
+}
+
+model Syllabus {
+  id              String     @id @default(uuid())
+  courseTitle     String
+  difficultyLevel String
+  durationWeeks   Int
+  learningGoals   String[]
+  content         Json
+  departmentId    String
+  department      Department @relation(fields: [departmentId], references: [id])
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@index([courseTitle])
 }
