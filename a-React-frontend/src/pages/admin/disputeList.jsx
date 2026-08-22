@@ -1,83 +1,293 @@
 import { useState } from 'react';
+import { ChevronDown, ChevronRight, CircleCheck, RotateCw, SearchX } from 'lucide-react';
+import { tracker } from '../../api/services/trackerService';
+import useFetch from '../../hooks/useFetch';
+import useListControls from '../../hooks/useListControls';
+import { formatDateTime, formatRelativeDate } from '../../utils/dateFormatter';
+import Alert from '../../components/ui/Alert';
+import Badge from '../../components/ui/Badge';
+import Button from '../../components/ui/Button';
+import ConfirmDialog from '../../components/ui/ConfirmDialog';
+import EmptyState from '../../components/ui/EmptyState';
+import PageHeader from '../../components/ui/PageHeader';
+import Panel from '../../components/ui/Panel';
+import SearchInput from '../../components/ui/SearchInput';
+import SegmentedControl from '../../components/ui/SegmentedControl';
+import Skeleton from '../../components/ui/Skeleton';
+import { Table, TBody, TD, TH, THead, TR } from '../../components/ui/Table';
 
-const mockDisputes = [
-  { id: 1, student: "Israel Olajide", dept: "Web Development", topic: "React Hooks", reason: "Instructor skipped the practical session.", status: "PENDING", date: "2026-04-10" },
-  { id: 2, student: "Jane Smith", dept: "Data Science", topic: "Neural Networks", reason: "Class was cancelled without notice.", status: "RESOLVED", date: "2026-04-08" },
-  { id: 3, student: "Kevin Hart", dept: "Cybersecurity", topic: "SQL Injection", reason: "The labs were not accessible during class.", status: "PENDING", date: "2026-04-12" },
-];
+// Stable reference so useListControls' memo does not recompute on every render.
+const EMPTY = [];
 
-const DisputesList = () => {
-  const [filter, setFilter] = useState('ALL');
+export default function DisputesList() {
+  const { data, status, error, reload } = useFetch(() => tracker.disputes(), []);
+  const disputes = data ?? EMPTY;
 
-  const filteredDisputes = filter === 'ALL' 
-    ? mockDisputes 
-    : mockDisputes.filter(d => d.status === filter);
+  const [expandedId, setExpandedId] = useState(null);
+  const [disputeToResolve, setDisputeToResolve] = useState(null);
+  const [isResolving, setIsResolving] = useState(false);
+  const [actionError, setActionError] = useState('');
+
+  const { rows, query, setQuery, filterValues, setFilter, sort, toggleSort, isFiltered, reset } =
+    useListControls(disputes, {
+      searchKeys: [
+        'student.name',
+        'curriculumItem.title',
+        'cohort.name',
+        'cohort.department.name',
+        'cohort.instructor.name',
+        'reason',
+      ],
+      filters: { status: (row, value) => row.status === value },
+      sorters: {
+        student: (row) => row.student.name,
+        topic: (row) => row.curriculumItem.title,
+        cohort: (row) => row.cohort.name,
+        raised: (row) => new Date(row.createdAt).getTime(),
+        status: (row) => row.status,
+      },
+      initialSort: { key: 'raised', direction: 'desc' },
+    });
+
+  const pendingCount = disputes.filter((dispute) => dispute.status === 'PENDING').length;
+
+  const resolveDispute = async () => {
+    setIsResolving(true);
+    setActionError('');
+
+    try {
+      await tracker.resolve(disputeToResolve.id);
+      await reload({ quiet: true });
+      setDisputeToResolve(null);
+    } catch (requestError) {
+      setActionError(requestError.response?.data?.message || 'Could not resolve the dispute.');
+      setDisputeToResolve(null);
+    } finally {
+      setIsResolving(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <h1 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Master Dispute Log</h1>
-          <p className="text-slate-500 text-sm font-medium">Review and resolve student feedback across all departments.</p>
-        </div>
+      <PageHeader
+        title="Disputes"
+        subtitle="Students raise a dispute when a topic is marked covered but was not delivered."
+      />
 
-        {/* Status Filters */}
-        <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
-          {['ALL', 'PENDING', 'RESOLVED'].map((s) => (
-            <button
-              key={s}
-              onClick={() => setFilter(s)}
-              className={`px-4 py-2 rounded-lg text-xs font-black transition-all ${
-                filter === s ? 'bg-white text-neo-blue shadow-sm' : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-      </div>
+      {status === 'error' && (
+        <Alert
+          tone="error"
+          title="Could not load disputes"
+          action={
+            <Button size="sm" variant="secondary" icon={RotateCw} onClick={() => reload()}>
+              Retry
+            </Button>
+          }
+        >
+          {error}
+        </Alert>
+      )}
 
-      {/* Disputes Table */}
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
-        <table className="w-full text-left">
-          <thead className="bg-slate-50/50 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
-            <tr>
-              <th className="px-6 py-4">Student & Dept</th>
-              <th className="px-6 py-4">Topic Flagged</th>
-              <th className="px-6 py-4">Date</th>
-              <th className="px-6 py-4 text-right">Status</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {filteredDisputes.map((dispute) => (
-              <tr key={dispute.id} className="hover:bg-slate-50/50 transition-colors">
-                <td className="px-6 py-5">
-                  <p className="font-bold text-slate-800">{dispute.student}</p>
-                  <p className="text-[10px] font-bold text-neo-blue uppercase">{dispute.dept}</p>
-                </td>
-                <td className="px-6 py-5">
-                  <p className="text-sm font-medium text-slate-700">{dispute.topic}</p>
-                  <p className="text-xs text-slate-400 italic mt-1 line-clamp-1">"{dispute.reason}"</p>
-                </td>
-                <td className="px-6 py-5 text-sm font-bold text-slate-500">
-                  {dispute.date}
-                </td>
-                <td className="px-6 py-5 text-right">
-                  <span className={`px-3 py-1 rounded-full text-[10px] font-black ${
-                    dispute.status === 'PENDING' 
-                    ? 'bg-red-50 text-red-500 border border-red-100' 
-                    : 'bg-emerald-50 text-emerald-600 border border-emerald-100'
-                  }`}>
-                    {dispute.status}
-                  </span>
-                </td>
-              </tr>
+      {actionError && <Alert tone="error">{actionError}</Alert>}
+
+      {status === 'loading' && (
+        <Panel>
+          <div className="divide-y divide-line">
+            {[0, 1, 2, 3, 4].map((key) => (
+              <div key={key} className="flex items-center gap-4 px-5 py-4">
+                <Skeleton className="h-4 w-32" />
+                <Skeleton className="h-4 flex-1" />
+                <Skeleton className="h-4 w-20" />
+                <Skeleton className="h-6 w-20 rounded-full" />
+              </div>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </div>
+        </Panel>
+      )}
+
+      {status === 'ready' && disputes.length === 0 && (
+        <Panel>
+          <EmptyState
+            icon={CircleCheck}
+            title="No disputes raised"
+            description="Nothing to review. Disputes appear here as soon as a student reports a topic."
+          />
+        </Panel>
+      )}
+
+      {status === 'ready' && disputes.length > 0 && (
+        <Panel
+          title={`${rows.length} of ${disputes.length} ${disputes.length === 1 ? 'dispute' : 'disputes'}`}
+          actions={
+            <>
+              <SearchInput
+                value={query}
+                onChange={setQuery}
+                label="Search disputes"
+                placeholder="Student, topic, cohort…"
+                className="w-full sm:w-64"
+              />
+              <SegmentedControl
+                label="Filter by status"
+                value={filterValues.status}
+                onChange={(value) => setFilter('status', value)}
+                options={[
+                  { value: 'all', label: 'All', count: disputes.length },
+                  { value: 'PENDING', label: 'Pending', count: pendingCount },
+                  {
+                    value: 'RESOLVED',
+                    label: 'Resolved',
+                    count: disputes.length - pendingCount,
+                  },
+                ]}
+              />
+            </>
+          }
+        >
+          {rows.length === 0 ? (
+            <EmptyState
+              icon={SearchX}
+              title="No disputes match those filters"
+              action={
+                <Button variant="secondary" onClick={reset}>
+                  Clear filters
+                </Button>
+              }
+            />
+          ) : (
+            <Table>
+              <THead>
+                <TR>
+                  <TH sortKey="student" sort={sort} onSort={toggleSort}>
+                    Student
+                  </TH>
+                  <TH sortKey="topic" sort={sort} onSort={toggleSort}>
+                    Topic
+                  </TH>
+                  <TH sortKey="cohort" sort={sort} onSort={toggleSort}>
+                    Cohort
+                  </TH>
+                  <TH>Instructor</TH>
+                  <TH sortKey="raised" sort={sort} onSort={toggleSort}>
+                    Raised
+                  </TH>
+                  <TH sortKey="status" sort={sort} onSort={toggleSort}>
+                    Status
+                  </TH>
+                  <TH align="right">
+                    <span className="sr-only">Actions</span>
+                  </TH>
+                </TR>
+              </THead>
+              <TBody>
+                {rows.map((dispute) => {
+                  const isExpanded = expandedId === dispute.id;
+                  const isPending = dispute.status === 'PENDING';
+
+                  return [
+                    <TR key={dispute.id} className="hover:bg-surface-raised">
+                      <TD>
+                        <button
+                          type="button"
+                          onClick={() => setExpandedId(isExpanded ? null : dispute.id)}
+                          aria-expanded={isExpanded}
+                          className="flex items-center gap-1.5 rounded text-left font-medium text-ink transition-colors hover:text-brand-700"
+                        >
+                          {isExpanded ? (
+                            <ChevronDown size={14} aria-hidden="true" />
+                          ) : (
+                            <ChevronRight size={14} aria-hidden="true" />
+                          )}
+                          {dispute.student.name}
+                        </button>
+                      </TD>
+                      <TD className="text-ink-muted">{dispute.curriculumItem.title}</TD>
+                      <TD>
+                        <p className="text-ink-muted">{dispute.cohort.name}</p>
+                        <p className="text-xs text-ink-subtle">{dispute.cohort.department.name}</p>
+                      </TD>
+                      <TD className="text-ink-muted">
+                        {dispute.cohort.instructor?.name ?? (
+                          <span className="text-ink-faint">Unassigned</span>
+                        )}
+                      </TD>
+                      <TD>
+                        <span
+                          className="whitespace-nowrap text-ink-muted"
+                          title={formatDateTime(dispute.createdAt)}
+                        >
+                          {formatRelativeDate(dispute.createdAt)}
+                        </span>
+                      </TD>
+                      <TD>
+                        <Badge tone={isPending ? 'warning' : 'success'}>
+                          {isPending ? 'Pending' : 'Resolved'}
+                        </Badge>
+                      </TD>
+                      <TD align="right">
+                        {isPending && (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => setDisputeToResolve(dispute)}
+                          >
+                            Resolve
+                          </Button>
+                        )}
+                      </TD>
+                    </TR>,
+
+                    isExpanded && (
+                      <TR key={`${dispute.id}-detail`} className="bg-surface-raised">
+                        <TD colSpan={7} className="px-4 py-4">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-ink-subtle">
+                            Student&apos;s report
+                          </p>
+                          <p className="mt-1.5 max-w-3xl whitespace-pre-line text-sm leading-6 text-ink">
+                            {dispute.reason}
+                          </p>
+                          <p className="mt-3 text-xs text-ink-subtle">
+                            Raised {formatDateTime(dispute.createdAt)}
+                            {dispute.resolvedAt &&
+                              ` · Resolved ${formatDateTime(dispute.resolvedAt)}`}
+                          </p>
+                        </TD>
+                      </TR>
+                    ),
+                  ].filter(Boolean);
+                })}
+              </TBody>
+            </Table>
+          )}
+        </Panel>
+      )}
+
+      {status === 'ready' && disputes.length > 0 && pendingCount === 0 && !isFiltered && (
+        <Alert tone="success" title="All disputes resolved">
+          Every reported topic has been reviewed and closed.
+        </Alert>
+      )}
+
+      <ConfirmDialog
+        isOpen={Boolean(disputeToResolve)}
+        onClose={() => setDisputeToResolve(null)}
+        onConfirm={resolveDispute}
+        title="Resolve this dispute?"
+        confirmLabel="Resolve dispute"
+        tone="primary"
+        isBusy={isResolving}
+      >
+        {disputeToResolve && (
+          <>
+            Mark <strong className="font-semibold text-ink">{disputeToResolve.student.name}</strong>
+            &apos;s report on{' '}
+            <strong className="font-semibold text-ink">
+              {disputeToResolve.curriculumItem.title}
+            </strong>{' '}
+            as resolved. This is permanent — a resolved dispute cannot be reopened.
+          </>
+        )}
+      </ConfirmDialog>
     </div>
   );
-};
-
-export default DisputesList;
+}

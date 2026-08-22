@@ -29,14 +29,14 @@ const CurriculumUpload = () => {
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder="e.g. Week 1: Intro to HTML... Week 2: CSS Flexbox..."
-            className="w-full h-[400px] p-4 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-neo-blue outline-none transition-all resize-none font-mono text-sm"
+            className="w-full h-[400px] p-4 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-brand-500 outline-none transition-all resize-none font-mono text-sm"
           ></textarea>
           
           <button 
             onClick={handleProcess}
             disabled={!text || isProcessing}
             className={`w-full py-4 rounded-xl font-bold text-white transition-all shadow-lg ${
-              isProcessing ? 'bg-slate-400 cursor-not-allowed' : 'bg-neo-blue hover:bg-sky-600 shadow-sky-100'
+              isProcessing ? 'bg-slate-400 cursor-not-allowed' : 'bg-brand-600 hover:bg-brand-700 shadow-brand-100'
             }`}
           >
             {isProcessing ? 'AI is Processing...' : '✨ Generate AI Schedule'}
@@ -56,15 +56,15 @@ const CurriculumUpload = () => {
 
           {isProcessing && (
             <div className="flex-1 flex flex-col items-center justify-center space-y-4">
-              <div className="w-12 h-12 border-4 border-neo-blue border-t-transparent rounded-full animate-spin"></div>
-              <p className="text-neo-blue font-medium animate-pulse">Analyzing topics and dates...</p>
+              <div className="w-12 h-12 border-4 border-brand-600 border-t-transparent rounded-full animate-spin"></div>
+              <p className="text-brand-600 font-medium animate-pulse">Analyzing topics and dates...</p>
             </div>
           )}
 
           {preview && (
             <div className="space-y-4 animate-in fade-in slide-in-from-right-4">
               <div className="p-4 bg-slate-800 rounded-xl border border-slate-700">
-                <span className="text-neo-blue text-xs font-bold uppercase">Week 1 - Monday</span>
+                <span className="text-brand-600 text-xs font-bold uppercase">Week 1 - Monday</span>
                 <p className="font-bold text-lg">Introduction to Web Standards</p>
                 <ul className="text-sm text-slate-400 mt-2 list-disc list-inside">
                   <li>HTTP/HTTPS Basics</li>
@@ -75,7 +75,7 @@ const CurriculumUpload = () => {
                 <span className="text-slate-500 text-xs font-bold uppercase">Week 1 - Wednesday</span>
                 <p className="font-bold text-lg">HTML5 Semantic Structure</p>
               </div>
-              <button className="w-full mt-4 border border-neo-blue text-neo-blue py-3 rounded-xl font-bold hover:bg-neo-blue hover:text-white transition-all">
+              <button className="w-full mt-4 border border-brand-600 text-brand-600 py-3 rounded-xl font-bold hover:bg-brand-600 hover:text-white transition-all">
                 Approve & Publish to Instructors
               </button>
             </div>

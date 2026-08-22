@@ -1,18 +1,29 @@
-import { createContext, useState, useContext, useEffect } from 'react';
+/* eslint-disable react-refresh/only-export-components */
+import { createContext, useContext, useState } from 'react';
+import axiosInstance from '../api/axiosInstance';
 
-const AuthContext = createContext();
+const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
-  // We'll initialize with a mock user so you can develop without a login screen
-  const [user, setUser] = useState({
-    id: "1",
-    name: "Israel",
-    role: "ADMIN", // Switch this to 'INSTRUCTOR' or 'STUDENT' to test views
-    dept: "Web Development"
-  });
+  const [user, setUser] = useState(() =>
+    JSON.parse(localStorage.getItem('nct_user') || 'null'),
+  );
 
-  const login = (userData) => setUser(userData);
-  const logout = () => setUser(null);
+  const login = async (credentials) => {
+    const { data } = await axiosInstance.post('/auth/login', credentials);
+
+    localStorage.setItem('nct_token', data.token);
+    localStorage.setItem('nct_user', JSON.stringify(data.user));
+    setUser(data.user);
+
+    return data.user;
+  };
+
+  const logout = () => {
+    localStorage.removeItem('nct_token');
+    localStorage.removeItem('nct_user');
+    setUser(null);
+  };
 
   return (
     <AuthContext.Provider value={{ user, login, logout }}>

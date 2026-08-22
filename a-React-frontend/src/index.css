@@ -1,21 +1,75 @@
 @import "tailwindcss";
 
 @theme {
-  /* Branding Colors */
-  --color-neo-blue: #0ea5e9;
-  --color-neo-dark: #0f172a;
-  --color-neo-success: #10b981;
-  --color-neo-danger: #ef4444;
-  --color-neo-bg: #f8fafc;
+  /* Brand scale, anchored on the NeoCloud mark (brand-400 is the logo periwinkle). */
+  --color-brand-50: #eef4ff;
+  --color-brand-100: #dbe7fe;
+  --color-brand-200: #bfd3fe;
+  --color-brand-300: #93b4fd;
+  --color-brand-400: #6699ff;
+  --color-brand-500: #4577f5;
+  --color-brand-600: #2f5ce0;
+  --color-brand-700: #2547b8;
+  --color-brand-800: #223c93;
+  --color-brand-900: #213874;
+  --color-brand-950: #172449;
 
-  /* Custom Shadows */
-  --shadow-neo: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+  /* Semantic surfaces and text. Swapping these is what enables a dark theme later. */
+  --color-surface: #ffffff;
+  --color-surface-sunken: #f1f5f9;
+  --color-surface-raised: #f8fafc;
+  --color-surface-inverse: #0b1120;
+  --color-line: #e2e8f0;
+  --color-line-strong: #cbd5e1;
+  --color-ink: #0f172a;
+  --color-ink-muted: #475569;
+  --color-ink-subtle: #64748b;
+  --color-ink-faint: #94a3b8;
+
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+
+  --shadow-card: 0 1px 2px 0 rgb(15 23 42 / 0.05);
+  --shadow-overlay: 0 20px 40px -12px rgb(15 23 42 / 0.28);
 }
 
-/* Base styles to make the app look clean */
 @layer base {
+  * {
+    box-sizing: border-box;
+  }
+
   body {
-    @apply bg-neo-bg text-slate-900;
-    font-family: 'Inter', system-ui, sans-serif;
+    @apply m-0 bg-surface-sunken font-sans text-ink antialiased;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  /* One focus treatment for every interactive element. */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-brand-600;
+  }
+}
+
+@layer components {
+  /* Shared shell for native controls. Anything with variants or state is a React component. */
+  .field {
+    @apply w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm text-ink
+      outline-none transition placeholder:text-ink-faint
+      focus:border-brand-500 focus:ring-2 focus:ring-brand-100
+      disabled:bg-surface-sunken disabled:text-ink-subtle
+      aria-[invalid=true]:border-red-400 aria-[invalid=true]:focus:ring-red-100;
   }
 }

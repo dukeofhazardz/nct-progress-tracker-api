@@ -7,6 +7,6 @@ export const register = async (req: Request, res: Response) => {
 };
 
 export const login = async (req: Request, res: Response) => {
-  const token = await authService.login(req.body);
-  res.json({ token });
+  const result = await authService.login(req.body);
+  res.json(result);
 };
