@@ -32,8 +32,16 @@ export const register = async (data: any) => {
     }
 
     const hashed = await bcrypt.hash(data.password, 10);
+    if (!hashed) {
+        throw new Error("Error hashing password");
+    }
 
-    return prisma.user.create({
+    const existingInstructor = await prisma.instructor.findUnique({ where: { email: data.email } });
+    if (existingInstructor) {
+        throw new Error("Instructor with this email already exists");
+    }
+
+    const instructor = await prisma.instructor.create({
         data: {
             username,
             email: data.email || null,
@@ -72,8 +80,10 @@ export const login = async ({ username, email, password }: any) => {
         throw error;
     }
 
-    const valid = await bcrypt.compare(password, user.password);
-    if (!valid) throw new Error("Invalid password");
+    const isMatch = await bcrypt.compare(password, instructor.password);
+    if (!isMatch) {
+        throw new Error("Invalid instructor credentials");
+    }
 
     const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET!, { expiresIn: "1d" });
 

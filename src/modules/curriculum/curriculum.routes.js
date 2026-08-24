@@ -1,0 +1,14 @@
+import { Router } from "express";
+import * as controller from "./curriculum.controller";
+import * as authMiddleware from "../../shared/middleware/auth.middleware";
+import * as adminMiddleware from "../../shared/middleware/admin.middleware";
+import { upload } from "../../config/multer.config";
+const router = Router();
+router.post("/", authMiddleware.protect, adminMiddleware.protect, upload.single("file"), controller.uploadCurriculumController);
+router.post("/generate", authMiddleware.protect, adminMiddleware.protect, controller.generateSyllabusController);
+router.get("/syllabi/department/:departmentId", authMiddleware.protect, controller.getDepartmentSyllabiController);
+router.get("/syllabi/:id", authMiddleware.protect, controller.getSyllabusByIdController);
+router.get("/:id", authMiddleware.protect, controller.getUploadedCurriculumController);
+router.get("/department/:departmentId", authMiddleware.protect, controller.getDepartmentCurriculumController);
+router.get("/", authMiddleware.protect, controller.getAllUploadedCurriculumController);
+export default router;
