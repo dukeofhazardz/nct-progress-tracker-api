@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Check, Eye, EyeOff } from 'lucide-react';
 import axiosInstance from '../../api/axiosInstance';
+import { tracker } from '../../api/services/trackerService';
 import { useAuth } from '../../context/authContext';
+import { homePathFor } from '../../routes/homePath';
 import Alert from '../../components/ui/Alert';
 import Button from '../../components/ui/Button';
 import Field from '../../components/ui/Field';
@@ -23,15 +25,29 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isBusy, setIsBusy] = useState(false);
+  const [departments, setDepartments] = useState([]);
+  const [departmentIds, setDepartmentIds] = useState([]);
   const { login } = useAuth();
   const navigate = useNavigate();
 
   const isRegistering = mode === 'register';
 
+  // Fetched only when the register tab is first opened, and via the public
+  // endpoint — there is no account yet to authenticate with.
+  useEffect(() => {
+    if (!isRegistering || departments.length) return;
+    tracker.publicDepartments().then(setDepartments).catch(() => setDepartments([]));
+  }, [isRegistering, departments.length]);
+
   const switchMode = (nextMode) => {
     setMode(nextMode);
     setError('');
   };
+
+  const toggleDepartment = (id) =>
+    setDepartmentIds((current) =>
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
+    );
 
   const submit = async (event) => {
     event.preventDefault();
@@ -40,10 +56,10 @@ export default function Login() {
 
     try {
       if (isRegistering) {
-        await axiosInstance.post('/auth/register', { name, username, password });
+        await axiosInstance.post('/auth/register', { name, username, password, departmentIds });
       }
       const user = await login({ username, password });
-      navigate(`/${user.role.toLowerCase()}`);
+      navigate(homePathFor(user.role));
     } catch (requestError) {
       setError(requestError.response?.data?.message || 'Unable to continue');
     } finally {
@@ -173,11 +189,38 @@ export default function Login() {
               }
             />
 
+            {/* Optional and non-binding: an instructor can enrol a student into any
+                cohort, which records that department automatically. */}
+            {isRegistering && departments.length > 0 && (
+              <fieldset>
+                <legend className="text-sm font-medium text-ink">Courses you are taking</legend>
+                <p className="mt-0.5 text-xs text-ink-subtle">
+                  Optional, and you can pick more than one. Your instructor confirms this when they
+                  enrol you.
+                </p>
+                <div className="mt-2 overflow-hidden rounded-lg border border-line">
+                  {departments.map((department) => (
+                    <label
+                      key={department.id}
+                      className="flex cursor-pointer items-center gap-2.5 border-b border-line px-3 py-2 text-sm transition-colors last:border-b-0 hover:bg-surface-raised"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={departmentIds.includes(department.id)}
+                        onChange={() => toggleDepartment(department.id)}
+                        className="h-4 w-4 rounded border-line-strong text-brand-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+                      />
+                      <span className="text-ink">{department.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            )}
+
             <Button type="submit" isLoading={isBusy} className="w-full">
               {isRegistering ? 'Create account' : 'Sign in'}
             </Button>
           </form>
-
           <p className="mt-6 text-xs leading-5 text-ink-subtle">
             Instructor and administrator accounts are created by an NCT administrator. Contact
             your department lead if you cannot sign in.

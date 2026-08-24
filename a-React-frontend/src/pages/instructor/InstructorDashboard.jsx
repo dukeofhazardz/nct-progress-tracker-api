@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   BookOpen,
   Check,
@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { tracker } from '../../api/services/trackerService';
 import useFetch from '../../hooks/useFetch';
+import initials from '../../utils/initials';
 import Alert from '../../components/ui/Alert';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
@@ -46,7 +47,9 @@ const applyToggle = (cohorts, cohortId, itemId, isCompleted) =>
 
 export default function InstructorDashboard() {
   const { data, status, error, reload, setData } = useFetch(() => tracker.cohorts(), []);
-  const cohorts = data ?? [];
+  // Memoised because the roster effect depends on it — a fresh [] each render
+  // would re-run that effect forever.
+  const cohorts = useMemo(() => data ?? [], [data]);
 
   const [expandedIds, setExpandedIds] = useState(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -57,18 +60,40 @@ export default function InstructorDashboard() {
   const [enrollingId, setEnrollingId] = useState(null);
   const [feedback, setFeedback] = useState({});
   const [progressError, setProgressError] = useState('');
+  // Rosters are fetched per cohort on first expand, keyed by cohort id, so the
+  // dashboard's initial load is unchanged.
+  const [rosters, setRosters] = useState({});
 
   // A single cohort opens on arrival; more than one starts collapsed so the page
   // is not a wall of every topic of every cohort at once.
   const openIds = expandedIds ?? new Set(cohorts.length === 1 ? [cohorts[0].id] : []);
 
-  const toggleExpanded = (cohortId) =>
+  const loadRoster = useCallback(async (cohortId) => {
+    setRosters((current) => ({ ...current, [cohortId]: { status: 'loading', students: [] } }));
+    try {
+      const students = await tracker.cohortStudents(cohortId);
+      setRosters((current) => ({ ...current, [cohortId]: { status: 'ready', students } }));
+    } catch {
+      setRosters((current) => ({ ...current, [cohortId]: { status: 'error', students: [] } }));
+    }
+  }, []);
+
+  // The single-cohort case auto-expands without a click, so its roster is
+  // requested here rather than in the toggle handler.
+  useEffect(() => {
+    if (cohorts.length !== 1 || expandedIds !== null) return;
+    if (!rosters[cohorts[0].id]) loadRoster(cohorts[0].id);
+  }, [cohorts, expandedIds, rosters, loadRoster]);
+
+  const toggleExpanded = (cohortId) => {
+    if (!openIds.has(cohortId) && !rosters[cohortId]) loadRoster(cohortId);
     setExpandedIds(() => {
       const next = new Set(openIds);
       if (next.has(cohortId)) next.delete(cohortId);
       else next.add(cohortId);
       return next;
     });
+  };
 
   const setCohortFeedback = (cohortId, value) =>
     setFeedback((current) => ({ ...current, [cohortId]: value }));
@@ -108,7 +133,7 @@ export default function InstructorDashboard() {
 
     try {
       await tracker.enrollStudent(cohort.id, login);
-      await reload({ quiet: true });
+      await Promise.all([reload({ quiet: true }), loadRoster(cohort.id)]);
       setStudentLogins((current) => ({ ...current, [cohort.id]: '' }));
       setCohortFeedback(cohort.id, { tone: 'success', text: `${login} is now enrolled.` });
     } catch (requestError) {
@@ -220,6 +245,7 @@ export default function InstructorDashboard() {
               const isOpen = openIds.has(cohort.id);
               const done = cohort.curriculum.filter((item) => item.isCompleted).length;
               const cohortFeedback = feedback[cohort.id];
+              const roster = rosters[cohort.id];
 
               return (
                 <Card key={cohort.id} className="overflow-hidden">
@@ -292,6 +318,54 @@ export default function InstructorDashboard() {
                           <Alert tone={cohortFeedback.tone}>{cohortFeedback.text}</Alert>
                         </div>
                       )}
+
+                      <div className="border-t border-line px-5 py-4">
+                        <p className="text-xs font-medium uppercase tracking-wide text-ink-subtle">
+                          Enrolled students
+                          {roster?.status === 'ready' && ` · ${roster.students.length}`}
+                        </p>
+
+                        {roster?.status === 'loading' && <Skeleton className="mt-2 h-4 w-48" />}
+
+                        {roster?.status === 'error' && (
+                          <Alert tone="error" className="mt-2">
+                            Could not load the roster.{' '}
+                            <button
+                              type="button"
+                              onClick={() => loadRoster(cohort.id)}
+                              className="font-semibold underline"
+                            >
+                              Try again
+                            </button>
+                          </Alert>
+                        )}
+
+                        {roster?.status === 'ready' &&
+                          (roster.students.length === 0 ? (
+                            <p className="mt-1.5 text-sm text-ink-subtle">
+                              Nobody is enrolled yet. Add a student using the form above.
+                            </p>
+                          ) : (
+                            <ul className="mt-2.5 flex flex-wrap gap-1.5">
+                              {roster.students.map((student) => (
+                                <li
+                                  key={student.id}
+                                  className="flex items-center gap-2 rounded-full border border-line bg-surface py-1 pl-1 pr-3"
+                                >
+                                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-100 text-[10px] font-bold text-brand-800">
+                                    {initials(student.name)}
+                                  </span>
+                                  <span className="text-xs font-medium text-ink">
+                                    {student.name}
+                                  </span>
+                                  <span className="text-xs text-ink-subtle">
+                                    @{student.username}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          ))}
+                      </div>
 
                       {cohort.curriculum.length === 0 ? (
                         <EmptyState

@@ -6,33 +6,41 @@ import initials from '../../utils/initials';
 import Brand from './Brand';
 
 /**
- * `match` is explicit rather than a prefix test because every admin route starts
- * with `/admin` — a naive `startsWith` would light up Dashboard everywhere.
+ * `match` is explicit rather than a prefix test because every management route
+ * starts with `/admin` — a naive `startsWith` would light up Dashboard everywhere.
+ *
+ * Admins and HODs share these destinations and these URLs. The server scopes a
+ * HOD's data to the departments they head, so the same pages show less.
  */
-const menus = {
-  ADMIN: [
-    {
-      name: 'Departments',
-      path: '/admin',
-      icon: LayoutDashboard,
-      match: (path) => path === '/admin' || path.startsWith('/admin/department'),
-    },
-    {
-      name: 'Disputes',
-      path: '/admin/disputes',
-      icon: Flag,
-      match: (path) => path.startsWith('/admin/disputes'),
-    },
-    {
-      name: 'Instructors',
-      path: '/admin/instructors',
-      icon: Users,
-      match: (path) => path.startsWith('/admin/instructors'),
-    },
-  ],
-};
+const managementMenu = [
+  {
+    name: 'Departments',
+    path: '/admin',
+    icon: LayoutDashboard,
+    match: (path) => path === '/admin' || path.startsWith('/admin/department'),
+  },
+  {
+    name: 'Disputes',
+    path: '/admin/disputes',
+    icon: Flag,
+    match: (path) => path.startsWith('/admin/disputes'),
+  },
+  {
+    name: 'Staff',
+    path: '/admin/staff',
+    icon: Users,
+    match: (path) => path.startsWith('/admin/staff'),
+  },
+];
 
-const roleLabels = { ADMIN: 'Administrator', INSTRUCTOR: 'Instructor', STUDENT: 'Student' };
+const menus = { ADMIN: managementMenu, HOD: managementMenu };
+
+const roleLabels = {
+  ADMIN: 'Administrator',
+  HOD: 'Head of Department',
+  INSTRUCTOR: 'Instructor',
+  STUDENT: 'Student',
+};
 
 export default function Sidebar({ isOpen, onClose }) {
   const { user, logout } = useAuth();

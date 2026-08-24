@@ -4,7 +4,22 @@ import { ChevronDown, LogOut } from 'lucide-react';
 import { useAuth } from '../../context/authContext';
 import initials from '../../utils/initials';
 
-const roleLabels = { ADMIN: 'Administrator', INSTRUCTOR: 'Instructor', STUDENT: 'Student' };
+const roleLabels = {
+  ADMIN: 'Administrator',
+  HOD: 'Head of Department',
+  INSTRUCTOR: 'Instructor',
+  STUDENT: 'Student',
+};
+
+/**
+ * A HOD can head several departments and a student can study in several, so the
+ * subtitle names one department but counts more than one.
+ */
+const departmentLabel = (user) => {
+  const departments = user?.departments ?? [];
+  if (departments.length > 1) return `${departments.length} departments`;
+  return departments[0]?.name || user?.dept || roleLabels[user?.role];
+};
 
 export default function UserMenu() {
   const { user, logout } = useAuth();
@@ -50,9 +65,7 @@ export default function UserMenu() {
         </span>
         <span className="hidden min-w-0 text-left sm:block">
           <span className="block truncate text-sm font-semibold text-ink">{user?.name}</span>
-          <span className="block truncate text-xs text-ink-subtle">
-            {user?.dept || roleLabels[user?.role]}
-          </span>
+          <span className="block truncate text-xs text-ink-subtle">{departmentLabel(user)}</span>
         </span>
         <ChevronDown size={14} className="hidden text-ink-faint sm:block" aria-hidden="true" />
       </button>

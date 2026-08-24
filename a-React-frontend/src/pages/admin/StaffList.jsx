@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Plus, RotateCw, SearchX, UserCheck, UserX, Users } from 'lucide-react';
+import { Plus, RotateCw, SearchX, ShieldCheck, UserCheck, UserX, Users } from 'lucide-react';
 import { tracker } from '../../api/services/trackerService';
+import { useAuth } from '../../context/authContext';
 import useFetch from '../../hooks/useFetch';
 import useListControls from '../../hooks/useListControls';
 import initials from '../../utils/initials';
@@ -19,26 +20,40 @@ import SegmentedControl from '../../components/ui/SegmentedControl';
 import Skeleton from '../../components/ui/Skeleton';
 import { Table, TBody, TD, TH, THead, TR } from '../../components/ui/Table';
 
-const emptyForm = { name: '', username: '', email: '', password: '', departmentId: '' };
+const emptyForm = {
+  role: 'INSTRUCTOR',
+  name: '',
+  username: '',
+  email: '',
+  password: '',
+  departmentId: '',
+  departmentIds: [],
+};
 
 // Stable reference so useListControls' memo does not recompute on every render.
 const EMPTY = [];
 
 const cohortsLabel = (count) => `${count} ${count === 1 ? 'cohort' : 'cohorts'}`;
 
-export default function InstructorsList() {
+const roleLabels = { INSTRUCTOR: 'Instructor', HOD: 'Head of Department' };
+
+const departmentNames = (person) =>
+  person.departments?.length ? person.departments.map((d) => d.name).join(', ') : null;
+
+export default function StaffList() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
+
   const { data, status, error, reload } = useFetch(
     () =>
-      Promise.all([tracker.instructors(), tracker.departments()]).then(
-        ([instructorRows, departmentRows]) => ({
-          instructors: instructorRows,
-          departments: departmentRows,
-        }),
-      ),
+      Promise.all([tracker.staff(), tracker.departments()]).then(([staffRows, departmentRows]) => ({
+        staff: staffRows,
+        departments: departmentRows,
+      })),
     [],
   );
 
-  const instructors = data?.instructors ?? EMPTY;
+  const staff = data?.staff ?? EMPTY;
   const departments = data?.departments ?? EMPTY;
 
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -46,34 +61,45 @@ export default function InstructorsList() {
   const [formError, setFormError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [pendingAction, setPendingAction] = useState(null); // { type, instructor }
+  const [pendingAction, setPendingAction] = useState(null); // { type, person }
   const [isActing, setIsActing] = useState(false);
   const [actionError, setActionError] = useState('');
   const [notice, setNotice] = useState('');
 
   const { rows, query, setQuery, filterValues, setFilter, sort, toggleSort, reset } =
-    useListControls(instructors, {
-      searchKeys: ['name', 'username', 'email', 'department.name'],
+    useListControls(staff, {
+      searchKeys: ['name', 'username', 'email', (row) => departmentNames(row) ?? ''],
       filters: {
         status: (row, value) => (value === 'active' ? row.isActive : !row.isActive),
-        department: (row, value) => row.department?.id === value,
+        role: (row, value) => row.role === value,
+        department: (row, value) => row.departments?.some((d) => d.id === value),
       },
       initialFilters: { status: 'active' },
       sorters: {
         name: (row) => row.name,
-        department: (row) => row.department?.name ?? '',
+        role: (row) => row.role,
+        department: (row) => departmentNames(row) ?? '',
         cohorts: (row) => row.activeCohorts,
         updated: (row) => new Date(row.updatedAt).getTime(),
       },
       initialSort: { key: 'name', direction: 'asc' },
     });
 
-  const activeCount = instructors.filter((instructor) => instructor.isActive).length;
-  const deactivatedCount = instructors.length - activeCount;
+  const activeCount = staff.filter((person) => person.isActive).length;
+  const deactivatedCount = staff.length - activeCount;
   const viewingDeactivated = filterValues.status === 'inactive';
+  const isCreatingHod = form.role === 'HOD';
 
   const updateField = (field) => (event) =>
     setForm((current) => ({ ...current, [field]: event.target.value }));
+
+  const toggleFormDepartment = (departmentId) =>
+    setForm((current) => ({
+      ...current,
+      departmentIds: current.departmentIds.includes(departmentId)
+        ? current.departmentIds.filter((id) => id !== departmentId)
+        : [...current.departmentIds, departmentId],
+    }));
 
   const closeForm = () => {
     setIsFormOpen(false);
@@ -83,42 +109,61 @@ export default function InstructorsList() {
 
   const submit = async (event) => {
     event.preventDefault();
+
+    if (isCreatingHod && form.departmentIds.length === 0) {
+      setFormError('Select at least one department for a head of department.');
+      return;
+    }
+
     setIsSubmitting(true);
     setFormError('');
 
     try {
-      await tracker.addInstructor({ ...form, email: form.email.trim() || undefined });
+      await tracker.addStaff({
+        role: form.role,
+        name: form.name,
+        username: form.username,
+        password: form.password,
+        email: form.email.trim() || undefined,
+        ...(isCreatingHod
+          ? { departmentIds: form.departmentIds }
+          : { departmentId: form.departmentId }),
+      });
       await reload({ quiet: true });
-      setNotice(`${form.name.trim()} can now sign in and create cohorts.`);
+      setNotice(
+        isCreatingHod
+          ? `${form.name.trim()} can now sign in and manage ${form.departmentIds.length === 1 ? 'their department' : `${form.departmentIds.length} departments`}.`
+          : `${form.name.trim()} can now sign in and create cohorts.`,
+      );
       closeForm();
     } catch (requestError) {
-      setFormError(requestError.response?.data?.message || 'Could not add the instructor.');
+      setFormError(requestError.response?.data?.message || 'Could not create the account.');
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const runPendingAction = async () => {
-    const { type, instructor } = pendingAction;
+    const { type, person } = pendingAction;
     setIsActing(true);
     setActionError('');
 
     try {
       if (type === 'deactivate') {
-        await tracker.deactivateInstructor(instructor.id);
+        await tracker.deactivateStaff(person.id);
         setNotice(
-          `${instructor.name} has been deactivated and can no longer sign in. You can restore the account from the Deactivated tab.`,
+          `${person.name} has been deactivated and can no longer sign in. You can restore the account from the Deactivated tab.`,
         );
       } else {
-        await tracker.reactivateInstructor(instructor.id);
-        setNotice(`${instructor.name} can sign in again with their existing password.`);
+        await tracker.reactivateStaff(person.id);
+        setNotice(`${person.name} can sign in again with their existing password.`);
       }
       await reload({ quiet: true });
       setPendingAction(null);
     } catch (requestError) {
       setActionError(
         requestError.response?.data?.message ||
-          `Could not ${type} ${instructor.name}. Please try again.`,
+          `Could not ${type} ${person.name}. Please try again.`,
       );
       setPendingAction(null);
     } finally {
@@ -132,7 +177,7 @@ export default function InstructorsList() {
         <EmptyState
           icon={UserCheck}
           title="No deactivated accounts"
-          description="Every instructor account is currently active."
+          description="Every staff account is currently active."
         />
       );
     }
@@ -140,7 +185,7 @@ export default function InstructorsList() {
     return (
       <EmptyState
         icon={SearchX}
-        title="No instructors match those filters"
+        title="No accounts match those filters"
         action={
           <Button variant="secondary" onClick={reset}>
             Clear filters
@@ -153,15 +198,19 @@ export default function InstructorsList() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Instructors"
-        subtitle="Instructor accounts, their departments, and how many cohorts each is running."
+        title="Staff"
+        subtitle={
+          isAdmin
+            ? 'Instructor and head-of-department accounts, their departments, and how many cohorts each is running.'
+            : 'Instructors in your departments, and how many cohorts each is running.'
+        }
         actions={
           <Button
             icon={Plus}
             onClick={() => setIsFormOpen(true)}
             disabled={status === 'ready' && departments.length === 0}
           >
-            Add instructor
+            Add account
           </Button>
         }
       />
@@ -169,7 +218,7 @@ export default function InstructorsList() {
       {status === 'error' && (
         <Alert
           tone="error"
-          title="Could not load instructors"
+          title="Could not load staff accounts"
           action={
             <Button size="sm" variant="secondary" icon={RotateCw} onClick={() => reload()}>
               Retry
@@ -185,7 +234,7 @@ export default function InstructorsList() {
 
       {status === 'ready' && departments.length === 0 && (
         <Alert tone="warning" title="No departments yet">
-          Every instructor belongs to a department. Create one first, then add instructors.
+          Every staff account belongs to a department. Create one first, then add accounts.
         </Alert>
       )}
 
@@ -204,16 +253,16 @@ export default function InstructorsList() {
         </Panel>
       )}
 
-      {status === 'ready' && instructors.length === 0 && (
+      {status === 'ready' && staff.length === 0 && (
         <Panel>
           <EmptyState
             icon={Users}
-            title="No instructors yet"
-            description="Add an instructor and assign them to a department to start tracking delivery."
+            title="No staff accounts yet"
+            description="Add an instructor or a head of department to start tracking delivery."
             action={
               departments.length > 0 && (
                 <Button icon={Plus} onClick={() => setIsFormOpen(true)}>
-                  Add instructor
+                  Add account
                 </Button>
               )
             }
@@ -221,7 +270,7 @@ export default function InstructorsList() {
         </Panel>
       )}
 
-      {status === 'ready' && instructors.length > 0 && (
+      {status === 'ready' && staff.length > 0 && (
         <Panel
           title={`${rows.length} shown`}
           description={
@@ -234,10 +283,24 @@ export default function InstructorsList() {
               <SearchInput
                 value={query}
                 onChange={setQuery}
-                label="Search instructors"
+                label="Search staff"
                 placeholder="Name or username…"
                 className="w-full sm:w-56"
               />
+              {/* A HOD only ever sees instructors, so the role filter would be a
+                  single-option control for them. */}
+              {isAdmin && (
+                <select
+                  aria-label="Filter by role"
+                  className="field sm:w-40"
+                  value={filterValues.role}
+                  onChange={(event) => setFilter('role', event.target.value)}
+                >
+                  <option value="all">All roles</option>
+                  <option value="INSTRUCTOR">Instructors</option>
+                  <option value="HOD">Heads of Department</option>
+                </select>
+              )}
               <select
                 aria-label="Filter by department"
                 className="field sm:w-44"
@@ -258,7 +321,7 @@ export default function InstructorsList() {
                 options={[
                   { value: 'active', label: 'Active', count: activeCount },
                   { value: 'inactive', label: 'Deactivated', count: deactivatedCount },
-                  { value: 'all', label: 'All', count: instructors.length },
+                  { value: 'all', label: 'All', count: staff.length },
                 ]}
               />
             </>
@@ -271,10 +334,15 @@ export default function InstructorsList() {
               <THead>
                 <TR>
                   <TH sortKey="name" sort={sort} onSort={toggleSort}>
-                    Instructor
+                    Name
                   </TH>
+                  {isAdmin && (
+                    <TH sortKey="role" sort={sort} onSort={toggleSort}>
+                      Role
+                    </TH>
+                  )}
                   <TH sortKey="department" sort={sort} onSort={toggleSort}>
-                    Department
+                    {isAdmin ? 'Departments' : 'Department'}
                   </TH>
                   <TH sortKey="cohorts" sort={sort} onSort={toggleSort} align="right">
                     Active cohorts
@@ -288,58 +356,71 @@ export default function InstructorsList() {
                 </TR>
               </THead>
               <TBody>
-                {rows.map((instructor) => (
-                  <TR key={instructor.id} className="hover:bg-surface-raised">
+                {rows.map((person) => (
+                  <TR key={person.id} className="hover:bg-surface-raised">
                     <TD>
                       <div className="flex items-center gap-3">
                         <span
                           className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
-                            instructor.isActive
+                            person.isActive
                               ? 'bg-brand-100 text-brand-800'
                               : 'bg-surface-sunken text-ink-faint'
                           }`}
                         >
-                          {initials(instructor.name)}
+                          {initials(person.name)}
                         </span>
                         <div className="min-w-0">
                           <p className="flex items-center gap-2 font-medium">
-                            <span className={instructor.isActive ? 'text-ink' : 'text-ink-subtle'}>
-                              {instructor.name}
+                            <span className={person.isActive ? 'text-ink' : 'text-ink-subtle'}>
+                              {person.name}
                             </span>
-                            {!instructor.isActive && <Badge tone="neutral">Deactivated</Badge>}
+                            {!person.isActive && <Badge tone="neutral">Deactivated</Badge>}
                           </p>
                           <p className="truncate text-xs text-ink-subtle">
-                            @{instructor.username}
-                            {instructor.email ? ` · ${instructor.email}` : ''}
+                            @{person.username}
+                            {person.email ? ` · ${person.email}` : ''}
                           </p>
                         </div>
                       </div>
                     </TD>
+                    {isAdmin && (
+                      <TD>
+                        {person.role === 'HOD' ? (
+                          <Badge tone="brand" icon={ShieldCheck}>
+                            {roleLabels.HOD}
+                          </Badge>
+                        ) : (
+                          <span className="text-ink-muted">{roleLabels.INSTRUCTOR}</span>
+                        )}
+                      </TD>
+                    )}
                     <TD className="text-ink-muted">
-                      {instructor.department?.name ?? (
-                        <span className="text-ink-faint">Unassigned</span>
-                      )}
+                      {departmentNames(person) ?? <span className="text-ink-faint">Unassigned</span>}
                     </TD>
                     <TD align="right">
-                      <Badge tone={instructor.activeCohorts > 0 ? 'brand' : 'neutral'}>
-                        {instructor.activeCohorts}
-                      </Badge>
+                      {person.role === 'HOD' ? (
+                        <span className="text-ink-faint">—</span>
+                      ) : (
+                        <Badge tone={person.activeCohorts > 0 ? 'brand' : 'neutral'}>
+                          {person.activeCohorts}
+                        </Badge>
+                      )}
                     </TD>
                     <TD>
                       <span
                         className="whitespace-nowrap text-ink-muted"
-                        title={formatDateTime(instructor.updatedAt)}
+                        title={formatDateTime(person.updatedAt)}
                       >
-                        {formatDate(instructor.updatedAt)}
+                        {formatDate(person.updatedAt)}
                       </span>
                     </TD>
                     <TD align="right">
-                      {instructor.isActive ? (
+                      {person.isActive ? (
                         <Button
                           size="sm"
                           variant="danger-quiet"
                           icon={UserX}
-                          onClick={() => setPendingAction({ type: 'deactivate', instructor })}
+                          onClick={() => setPendingAction({ type: 'deactivate', person })}
                         >
                           Deactivate
                         </Button>
@@ -348,7 +429,7 @@ export default function InstructorsList() {
                           size="sm"
                           variant="secondary"
                           icon={UserCheck}
-                          onClick={() => setPendingAction({ type: 'reactivate', instructor })}
+                          onClick={() => setPendingAction({ type: 'reactivate', person })}
                         >
                           Reactivate
                         </Button>
@@ -365,21 +446,36 @@ export default function InstructorsList() {
       <Modal
         isOpen={isFormOpen}
         onClose={closeForm}
-        title="Add instructor"
-        description="The instructor signs in with this username and can then create cohorts."
+        title="Add staff account"
+        description="They sign in with this username. Instructors create cohorts; heads of department manage their departments."
         footer={
           <>
             <Button variant="secondary" onClick={closeForm} disabled={isSubmitting}>
               Cancel
             </Button>
-            <Button type="submit" form="instructor-form" isLoading={isSubmitting}>
-              Create instructor
+            <Button type="submit" form="staff-form" isLoading={isSubmitting}>
+              Create account
             </Button>
           </>
         }
       >
-        <form id="instructor-form" onSubmit={submit} className="space-y-4">
+        <form id="staff-form" onSubmit={submit} className="space-y-4">
           {formError && <Alert tone="error">{formError}</Alert>}
+
+          {/* Only an administrator can create heads of department; a HOD adds
+              instructors to their own departments. */}
+          {isAdmin && (
+            <SegmentedControl
+              label="Role"
+              stretch
+              value={form.role}
+              onChange={(role) => setForm((current) => ({ ...current, role }))}
+              options={[
+                { value: 'INSTRUCTOR', label: 'Instructor' },
+                { value: 'HOD', label: 'Head of Department' },
+              ]}
+            />
+          )}
 
           <Field
             label="Full name"
@@ -391,7 +487,7 @@ export default function InstructorsList() {
           />
           <Field
             label="Username"
-            hint="Lowercased automatically. Reusing a deactivated instructor's username restores that account."
+            hint="Lowercased automatically. Reusing a deactivated account's username restores it."
             value={form.username}
             onChange={updateField('username')}
             placeholder="ada.obi"
@@ -415,20 +511,51 @@ export default function InstructorsList() {
             autoComplete="new-password"
             required
           />
-          <Field
-            as="select"
-            label="Department"
-            value={form.departmentId}
-            onChange={updateField('departmentId')}
-            required
-          >
-            <option value="">Select a department</option>
-            {departments.map((department) => (
-              <option key={department.id} value={department.id}>
-                {department.name}
-              </option>
-            ))}
-          </Field>
+
+          {isCreatingHod ? (
+            <fieldset>
+              <legend className="text-sm font-medium text-ink">
+                Departments they head
+                <span aria-hidden="true" className="ml-0.5 text-rose-600">
+                  *
+                </span>
+              </legend>
+              <p className="mt-0.5 text-xs text-ink-subtle">
+                They can manage instructors, cohorts and disputes in each one.
+              </p>
+              <div className="mt-2 space-y-1.5 overflow-hidden rounded-lg border border-line">
+                {departments.map((department) => (
+                  <label
+                    key={department.id}
+                    className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm transition-colors hover:bg-surface-raised"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={form.departmentIds.includes(department.id)}
+                      onChange={() => toggleFormDepartment(department.id)}
+                      className="h-4 w-4 rounded border-line-strong text-brand-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+                    />
+                    <span className="text-ink">{department.name}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          ) : (
+            <Field
+              as="select"
+              label="Department"
+              value={form.departmentId}
+              onChange={updateField('departmentId')}
+              required
+            >
+              <option value="">Select a department</option>
+              {departments.map((department) => (
+                <option key={department.id} value={department.id}>
+                  {department.name}
+                </option>
+              ))}
+            </Field>
+          )}
         </form>
       </Modal>
 
@@ -436,18 +563,20 @@ export default function InstructorsList() {
         isOpen={pendingAction?.type === 'deactivate'}
         onClose={() => setPendingAction(null)}
         onConfirm={runPendingAction}
-        title="Deactivate instructor?"
+        title="Deactivate account?"
         confirmLabel="Deactivate"
         tone="danger"
         isBusy={isActing}
       >
-        {pendingAction?.instructor && (
+        {pendingAction?.person && (
           <>
-            <strong className="font-semibold text-ink">{pendingAction.instructor.name}</strong> will
-            no longer be able to sign in, and their{' '}
-            {cohortsLabel(pendingAction.instructor.activeCohorts)} will become unassigned. Recorded
-            progress and student disputes are preserved, and you can reactivate the account at any
-            time.
+            <strong className="font-semibold text-ink">{pendingAction.person.name}</strong> will no
+            longer be able to sign in
+            {pendingAction.person.role === 'HOD'
+              ? '. The departments they head are unaffected.'
+              : `, and their ${cohortsLabel(pendingAction.person.activeCohorts)} will become unassigned.`}{' '}
+            Recorded progress and student disputes are preserved, and you can reactivate the account
+            at any time.
           </>
         )}
       </ConfirmDialog>
@@ -456,16 +585,18 @@ export default function InstructorsList() {
         isOpen={pendingAction?.type === 'reactivate'}
         onClose={() => setPendingAction(null)}
         onConfirm={runPendingAction}
-        title="Reactivate instructor?"
+        title="Reactivate account?"
         confirmLabel="Reactivate"
         tone="primary"
         isBusy={isActing}
       >
-        {pendingAction?.instructor && (
+        {pendingAction?.person && (
           <>
-            <strong className="font-semibold text-ink">{pendingAction.instructor.name}</strong> will
-            be able to sign in again with their existing password. Cohorts unassigned when they were
-            deactivated stay unassigned — reassign those from the department page.
+            <strong className="font-semibold text-ink">{pendingAction.person.name}</strong> will be
+            able to sign in again with their existing password
+            {pendingAction.person.role === 'HOD'
+              ? ' and resume managing their departments.'
+              : '. Cohorts unassigned when they were deactivated stay unassigned — reassign those from the department page.'}
           </>
         )}
       </ConfirmDialog>
