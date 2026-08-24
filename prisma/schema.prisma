@@ -94,10 +94,15 @@ model Cohort {
   progress     Progress[]
   disputes     Dispute[]
   isActive     Boolean      @default(true)
+  /// Set when the instructor marks delivery finished; null while in progress.
+  /// Separate from `isActive`, which means "not archived" — a completed cohort is
+  /// still a live record that admins, HODs and its students can read.
+  completedAt  DateTime?
   createdAt    DateTime     @default(now())
 
   @@unique([departmentId, name])
   @@index([instructorId, isActive])
+  @@index([departmentId, completedAt])
 }
 
 model Enrollment {

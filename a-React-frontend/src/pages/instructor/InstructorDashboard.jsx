@@ -2,26 +2,31 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   BookOpen,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   GraduationCap,
   Plus,
+  RotateCcw,
   RotateCw,
   UserPlus,
 } from 'lucide-react';
 import { tracker } from '../../api/services/trackerService';
 import useFetch from '../../hooks/useFetch';
 import initials from '../../utils/initials';
+import { formatDate } from '../../utils/dateFormatter';
 import Alert from '../../components/ui/Alert';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import Card from '../../components/ui/Card';
+import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import EmptyState from '../../components/ui/EmptyState';
 import Field from '../../components/ui/Field';
 import Modal from '../../components/ui/Modal';
 import PageHeader from '../../components/ui/PageHeader';
 import Panel from '../../components/ui/Panel';
 import ProgressBar from '../../components/ui/ProgressBar';
+import SegmentedControl from '../../components/ui/SegmentedControl';
 import Skeleton from '../../components/ui/Skeleton';
 
 const percent = (done, total) => (total ? Math.round((done / total) * 100) : 0);
@@ -60,6 +65,10 @@ export default function InstructorDashboard() {
   const [enrollingId, setEnrollingId] = useState(null);
   const [feedback, setFeedback] = useState({});
   const [progressError, setProgressError] = useState('');
+  const [view, setView] = useState('active');
+  const [completing, setCompleting] = useState(null); // cohort pending confirmation
+  const [isCompleting, setIsCompleting] = useState(false);
+  const [completionNotice, setCompletionNotice] = useState('');
   // Rosters are fetched per cohort on first expand, keyed by cohort id, so the
   // dashboard's initial load is unchanged.
   const [rosters, setRosters] = useState({});
@@ -163,10 +172,45 @@ export default function InstructorDashboard() {
     }
   };
 
+  const confirmComplete = async () => {
+    setIsCompleting(true);
+    setProgressError('');
+    try {
+      await tracker.completeCohort(completing.id);
+      await reload({ quiet: true });
+      setCompletionNotice(`${completing.name} is marked completed and moved to the Completed tab.`);
+      setCompleting(null);
+    } catch (requestError) {
+      setProgressError(
+        requestError.response?.data?.message || 'Could not mark the cohort completed.',
+      );
+      setCompleting(null);
+    } finally {
+      setIsCompleting(false);
+    }
+  };
+
+  const reopenCohort = async (cohort) => {
+    setProgressError('');
+    try {
+      await tracker.reopenCohort(cohort.id);
+      await reload({ quiet: true });
+      setCompletionNotice(`${cohort.name} has been reopened for editing.`);
+    } catch (requestError) {
+      setProgressError(requestError.response?.data?.message || 'Could not reopen the cohort.');
+    }
+  };
+
   const totalStudents = cohorts.reduce((total, cohort) => total + cohort._count.enrollments, 0);
   const averageProgress = cohorts.length
     ? Math.round(cohorts.reduce((total, cohort) => total + cohort.progressPercent, 0) / cohorts.length)
     : 0;
+
+  const completedCount = cohorts.filter((cohort) => cohort.completedAt).length;
+  const inProgressCount = cohorts.length - completedCount;
+  const visibleCohorts = cohorts.filter((cohort) =>
+    view === 'completed' ? cohort.completedAt : !cohort.completedAt,
+  );
 
   return (
     <div className="space-y-6">
@@ -195,6 +239,7 @@ export default function InstructorDashboard() {
       )}
 
       {progressError && <Alert tone="error">{progressError}</Alert>}
+      {completionNotice && <Alert tone="success">{completionNotice}</Alert>}
 
       {status === 'loading' && (
         <div className="space-y-4">
@@ -230,6 +275,7 @@ export default function InstructorDashboard() {
               ['Cohorts', cohorts.length],
               ['Students', totalStudents],
               ['Average progress', `${averageProgress}%`],
+              ['Completed', completedCount],
             ].map(([label, value]) => (
               <div key={label}>
                 <p className="text-xs font-medium uppercase tracking-wide text-ink-subtle">
@@ -240,12 +286,44 @@ export default function InstructorDashboard() {
             ))}
           </div>
 
+          {/* Completed cohorts get their own tab so a finished delivery does not
+              clutter the working list, while staying one click away. */}
+          {completedCount > 0 && (
+            <SegmentedControl
+              label="Cohort status"
+              value={view}
+              onChange={setView}
+              options={[
+                { value: 'active', label: 'In progress', count: inProgressCount },
+                { value: 'completed', label: 'Completed', count: completedCount },
+              ]}
+            />
+          )}
+
+          {visibleCohorts.length === 0 ? (
+            <Panel>
+              <EmptyState
+                icon={view === 'completed' ? CheckCircle2 : GraduationCap}
+                title={view === 'completed' ? 'No completed cohorts' : 'No cohorts in progress'}
+                description={
+                  view === 'completed'
+                    ? 'A cohort appears here once you have covered every topic and marked it completed.'
+                    : 'Every cohort you are running has been completed. Reopen one from the Completed tab to make changes.'
+                }
+              />
+            </Panel>
+          ) : (
           <div className="space-y-4">
-            {cohorts.map((cohort) => {
+            {visibleCohorts.map((cohort) => {
               const isOpen = openIds.has(cohort.id);
               const done = cohort.curriculum.filter((item) => item.isCompleted).length;
               const cohortFeedback = feedback[cohort.id];
               const roster = rosters[cohort.id];
+              const isDone = Boolean(cohort.completedAt);
+              // The button only appears once every topic is ticked; the server
+              // re-checks this, so hiding it is convenience rather than the rule.
+              const canComplete =
+                !isDone && cohort.curriculum.length > 0 && done === cohort.curriculum.length;
 
               return (
                 <Card key={cohort.id} className="overflow-hidden">
@@ -263,13 +341,21 @@ export default function InstructorDashboard() {
                           <ChevronRight size={16} className="shrink-0 text-ink-faint" aria-hidden="true" />
                         )}
                         <span className="min-w-0">
-                          <span className="block truncate text-sm font-semibold text-ink">
-                            {cohort.name}
+                          <span className="flex items-center gap-2">
+                            <span className="truncate text-sm font-semibold text-ink">
+                              {cohort.name}
+                            </span>
+                            {isDone && (
+                              <Badge tone="success" icon={CheckCircle2}>
+                                Completed
+                              </Badge>
+                            )}
                           </span>
                           <span className="mt-0.5 block text-xs text-ink-subtle">
                             {cohort._count.enrollments}{' '}
                             {cohort._count.enrollments === 1 ? 'student' : 'students'} ·{' '}
                             {done} of {cohort.curriculum.length} topics
+                            {isDone && ` · completed ${formatDate(cohort.completedAt)}`}
                           </span>
                         </span>
                       </span>
@@ -283,8 +369,46 @@ export default function InstructorDashboard() {
                     </button>
                   </h2>
 
+                  {/* Surfaced on the collapsed card too, so an instructor who has
+                      just ticked the last topic does not have to hunt for it. */}
+                  {canComplete && (
+                    <div className="flex flex-col gap-2 border-t border-line bg-emerald-50 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-sm text-emerald-900">
+                        Every topic is covered. Mark this cohort completed to close it out.
+                      </p>
+                      <Button
+                        size="sm"
+                        icon={CheckCircle2}
+                        onClick={() => setCompleting(cohort)}
+                        className="shrink-0"
+                      >
+                        Mark completed
+                      </Button>
+                    </div>
+                  )}
+
+                  {isDone && (
+                    <div className="flex flex-col gap-2 border-t border-line bg-surface-raised px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-sm text-ink-muted">
+                        Recorded progress is locked while this cohort is completed.
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        icon={RotateCcw}
+                        onClick={() => reopenCohort(cohort)}
+                        className="shrink-0"
+                      >
+                        Reopen
+                      </Button>
+                    </div>
+                  )}
+
                   {isOpen && (
                     <div className="border-t border-line">
+                      {/* Enrolment is closed once a cohort is completed — its roster
+                          is a finished record. */}
+                      {!isDone && (
                       <form
                         onSubmit={(event) => enrollStudent(event, cohort)}
                         className="flex flex-col gap-2 bg-surface-raised px-5 py-4 sm:flex-row sm:items-end"
@@ -312,6 +436,7 @@ export default function InstructorDashboard() {
                           Enrol
                         </Button>
                       </form>
+                      )}
 
                       {cohortFeedback && (
                         <div className="border-t border-line px-5 py-3">
@@ -377,11 +502,16 @@ export default function InstructorDashboard() {
                         <ul className="divide-y divide-line border-t border-line">
                           {cohort.curriculum.map((item, index) => (
                             <li key={item.id}>
-                              <label className="flex min-h-12 cursor-pointer items-center gap-3 px-5 py-2.5 transition-colors hover:bg-surface-raised">
+                              <label
+                                className={`flex min-h-12 items-center gap-3 px-5 py-2.5 transition-colors ${
+                                  isDone ? 'cursor-default' : 'cursor-pointer hover:bg-surface-raised'
+                                }`}
+                              >
                                 <input
                                   type="checkbox"
                                   checked={item.isCompleted}
                                   onChange={() => toggleProgress(cohort, item)}
+                                  disabled={isDone}
                                   className="peer sr-only"
                                 />
                                 <span
@@ -425,8 +555,28 @@ export default function InstructorDashboard() {
               );
             })}
           </div>
+          )}
         </>
       )}
+
+      <ConfirmDialog
+        isOpen={Boolean(completing)}
+        onClose={() => setCompleting(null)}
+        onConfirm={confirmComplete}
+        title="Mark cohort completed?"
+        confirmLabel="Mark completed"
+        tone="primary"
+        isBusy={isCompleting}
+      >
+        {completing && (
+          <>
+            <strong className="font-semibold text-ink">{completing.name}</strong> will move to your
+            Completed tab and appear under completed cohorts for your department. Recorded progress
+            and enrolment are locked while it is completed — you can reopen it at any time, and
+            nothing is deleted.
+          </>
+        )}
+      </ConfirmDialog>
 
       <Modal
         isOpen={isCreateOpen}
