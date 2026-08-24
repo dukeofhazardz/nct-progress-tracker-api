@@ -1,0 +1,4 @@
+interface:
+  display_name: "Expert Web Designer"
+  short_description: "Design polished SaaS and product interfaces"
+  default_prompt: "Use $expert-web-designer to design a professional SaaS interface for my product."

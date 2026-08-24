@@ -21,4 +21,14 @@ app.use("/api/department", departmentRoutes);
 app.use("/api/cohort", cohortRoutes);
 app.use("/api/curriculum", curriculumRoutes);
 
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const status = err.status ?? (err.code === "P2002" ? 409 : 500);
+
+  // Expected rejections (a taken username, a deactivated account) are not server
+  // faults — only log the ones that actually are.
+  if (status >= 500) console.error(err);
+
+  res.status(status).json({ message: err.code === "P2002" ? "That value already exists" : err.message || "Server error" });
+});
+
 export default app;

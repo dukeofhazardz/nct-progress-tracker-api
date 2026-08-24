@@ -1,0 +1,451 @@
+import { useCallback, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { BookOpen, Lock, RotateCw, Users } from 'lucide-react';
+import { tracker } from '../../api/services/trackerService';
+import useFetch from '../../hooks/useFetch';
+import Alert from '../../components/ui/Alert';
+import Badge from '../../components/ui/Badge';
+import Button from '../../components/ui/Button';
+import EmptyState from '../../components/ui/EmptyState';
+import Field from '../../components/ui/Field';
+import Modal from '../../components/ui/Modal';
+import PageHeader from '../../components/ui/PageHeader';
+import Panel from '../../components/ui/Panel';
+import ProgressBar from '../../components/ui/ProgressBar';
+import SegmentedControl from '../../components/ui/SegmentedControl';
+import Skeleton from '../../components/ui/Skeleton';
+import { Table, TBody, TD, TH, THead, TR } from '../../components/ui/Table';
+
+const averageProgress = (cohorts) =>
+  cohorts.length
+    ? Math.round(cohorts.reduce((total, cohort) => total + cohort.progressPercent, 0) / cohorts.length)
+    : 0;
+
+const toTopicLines = (curriculum) => curriculum.map((item) => item.title).join('\n');
+
+const parseTopics = (text) =>
+  text
+    .split('\n')
+    .map((title) => title.trim())
+    .filter(Boolean);
+
+export default function DepartmentDetail() {
+  const { id } = useParams();
+  const [activeTab, setActiveTab] = useState('overview');
+  const [topics, setTopics] = useState('');
+
+  const load = useCallback(
+    () =>
+      tracker.department(id).then((department) => {
+        setTopics(toTopicLines(department.curriculum));
+        return department;
+      }),
+    [id],
+  );
+
+  const { data: department, status, error, reload } = useFetch(load, [id]);
+
+  const [isSaving, setIsSaving] = useState(false);
+  const [curriculumMessage, setCurriculumMessage] = useState(null);
+
+  const [cohortToAssign, setCohortToAssign] = useState(null);
+  const [selectedInstructorId, setSelectedInstructorId] = useState('');
+  const [isAssigning, setIsAssigning] = useState(false);
+  const [assignError, setAssignError] = useState('');
+
+  const saveCurriculum = async (event) => {
+    event.preventDefault();
+    const items = parseTopics(topics).map((title) => ({ title }));
+
+    if (!items.length) {
+      setCurriculumMessage({ tone: 'error', text: 'Add at least one curriculum topic.' });
+      return;
+    }
+
+    setIsSaving(true);
+    setCurriculumMessage(null);
+
+    try {
+      await tracker.updateCurriculum(id, items);
+      await reload({ quiet: true });
+      setCurriculumMessage({ tone: 'success', text: 'Curriculum published successfully.' });
+    } catch (requestError) {
+      setCurriculumMessage({
+        tone: 'error',
+        text: requestError.response?.data?.message || 'Could not publish the curriculum.',
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const openAssign = (cohort) => {
+    setCohortToAssign(cohort);
+    setSelectedInstructorId(cohort.instructor?.isActive ? cohort.instructor.id : '');
+    setAssignError('');
+  };
+
+  const assignInstructor = async (event) => {
+    event.preventDefault();
+
+    if (!selectedInstructorId) {
+      setAssignError('Choose an instructor to continue.');
+      return;
+    }
+
+    setIsAssigning(true);
+    setAssignError('');
+
+    try {
+      await tracker.assignInstructor(cohortToAssign.id, selectedInstructorId);
+      await reload({ quiet: true });
+      setCohortToAssign(null);
+    } catch (requestError) {
+      setAssignError(requestError.response?.data?.message || 'Could not assign the instructor.');
+    } finally {
+      setIsAssigning(false);
+    }
+  };
+
+  if (status === 'loading') {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-4 w-48" />
+        <Skeleton className="h-8 w-72" />
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-64 w-full" />
+      </div>
+    );
+  }
+
+  if (status === 'error') {
+    return (
+      <Alert
+        tone="error"
+        title="Could not load this department"
+        action={
+          <Button size="sm" variant="secondary" icon={RotateCw} onClick={() => reload()}>
+            Retry
+          </Button>
+        }
+      >
+        {error}
+      </Alert>
+    );
+  }
+
+  const { cohorts, users: instructors, curriculum } = department;
+
+  /**
+   * The API refuses to replace a curriculum once any progress exists (409). This
+   * only sees active cohorts, so the server check stays authoritative — but it
+   * catches the common case before the admin retypes everything.
+   */
+  const isCurriculumLocked = cohorts.some((cohort) => cohort.progress.length > 0);
+
+  const stats = [
+    ['Instructors', instructors.length],
+    ['Active cohorts', cohorts.length],
+    ['Curriculum topics', curriculum.length],
+    ['Average progress', cohorts.length ? `${averageProgress(cohorts)}%` : '—'],
+  ];
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        breadcrumb={[{ label: 'Departments', to: '/admin' }, { label: department.name }]}
+        title={department.name}
+        subtitle="Publish the curriculum and monitor how each instructor is delivering it."
+        actions={
+          <SegmentedControl
+            label="Department view"
+            value={activeTab}
+            onChange={setActiveTab}
+            options={[
+              { value: 'overview', label: 'Overview' },
+              { value: 'curriculum', label: 'Curriculum' },
+            ]}
+          />
+        }
+      />
+
+      <div className="flex flex-wrap gap-x-10 gap-y-4 rounded-lg border border-line bg-surface px-5 py-4 shadow-card">
+        {stats.map(([label, value]) => (
+          <div key={label}>
+            <p className="text-xs font-medium uppercase tracking-wide text-ink-subtle">{label}</p>
+            <p className="mt-1 text-xl font-bold tracking-tight text-ink">{value}</p>
+          </div>
+        ))}
+      </div>
+
+      {activeTab === 'overview' ? (
+        <>
+          <Panel
+            title="Cohorts"
+            description="Assign unstaffed cohorts, or move an ongoing cohort to another instructor."
+          >
+            {cohorts.length === 0 ? (
+              <EmptyState
+                icon={Users}
+                title="No active cohorts"
+                description="Instructors in this department create cohorts from their own workspace."
+              />
+            ) : (
+              <Table>
+                <THead>
+                  <TR>
+                    <TH>Cohort</TH>
+                    <TH align="right">Students</TH>
+                    <TH>Instructor</TH>
+                    <TH className="w-48">Progress</TH>
+                    <TH align="right">
+                      <span className="sr-only">Actions</span>
+                    </TH>
+                  </TR>
+                </THead>
+                <TBody>
+                  {cohorts.map((cohort) => {
+                    const hasInstructor = Boolean(cohort.instructor?.isActive);
+                    return (
+                      <TR key={cohort.id} className="hover:bg-surface-raised">
+                        <TD className="font-medium text-ink">{cohort.name}</TD>
+                        <TD align="right" className="text-ink-muted">
+                          {cohort._count.enrollments}
+                        </TD>
+                        <TD>
+                          {hasInstructor ? (
+                            <span className="text-ink-muted">{cohort.instructor.name}</span>
+                          ) : (
+                            <Badge tone="warning">Unassigned</Badge>
+                          )}
+                        </TD>
+                        <TD>
+                          <div className="flex items-center gap-2.5">
+                            <ProgressBar
+                              value={cohort.progressPercent}
+                              size="sm"
+                              className="w-24 shrink-0"
+                            />
+                            <span className="text-xs font-semibold text-ink-muted">
+                              {cohort.progressPercent}%
+                            </span>
+                          </div>
+                        </TD>
+                        <TD align="right">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => openAssign(cohort)}
+                            disabled={instructors.length === 0}
+                          >
+                            {hasInstructor ? 'Reassign' : 'Assign'}
+                          </Button>
+                        </TD>
+                      </TR>
+                    );
+                  })}
+                </TBody>
+              </Table>
+            )}
+
+            {instructors.length === 0 && cohorts.length > 0 && (
+              <div className="border-t border-line px-5 py-4">
+                <Alert tone="warning">
+                  Add an instructor to this department before cohorts can be assigned.
+                </Alert>
+              </div>
+            )}
+          </Panel>
+
+          <Panel
+            title="Instructor delivery"
+            description="Average curriculum coverage across each instructor's active cohorts."
+          >
+            {instructors.length === 0 ? (
+              <EmptyState
+                icon={Users}
+                title="No active instructors"
+                description="Assign instructors to this department from the Instructors page."
+                action={
+                  <Button variant="secondary" to="/admin/instructors">
+                    Go to instructors
+                  </Button>
+                }
+              />
+            ) : (
+              <Table>
+                <THead>
+                  <TR>
+                    <TH>Instructor</TH>
+                    <TH align="right">Cohorts</TH>
+                    <TH align="right">Students</TH>
+                    <TH className="w-56">Average progress</TH>
+                  </TR>
+                </THead>
+                <TBody>
+                  {instructors.map((instructor) => {
+                    const average = averageProgress(instructor.cohorts);
+                    const students = instructor.cohorts.reduce(
+                      (total, cohort) => total + cohort._count.enrollments,
+                      0,
+                    );
+
+                    return (
+                      <TR key={instructor.id} className="hover:bg-surface-raised">
+                        <TD>
+                          <p className="font-medium text-ink">{instructor.name}</p>
+                          <p className="text-xs text-ink-subtle">@{instructor.username}</p>
+                        </TD>
+                        <TD align="right" className="text-ink-muted">
+                          {instructor.cohorts.length}
+                        </TD>
+                        <TD align="right" className="text-ink-muted">
+                          {students}
+                        </TD>
+                        <TD>
+                          {instructor.cohorts.length === 0 ? (
+                            <span className="text-xs text-ink-faint">No cohorts assigned</span>
+                          ) : (
+                            <div className="flex items-center gap-2.5">
+                              <ProgressBar value={average} size="sm" className="w-28 shrink-0" />
+                              <span className="text-xs font-semibold text-ink-muted">
+                                {average}%
+                              </span>
+                            </div>
+                          )}
+                        </TD>
+                      </TR>
+                    );
+                  })}
+                </TBody>
+              </Table>
+            )}
+          </Panel>
+        </>
+      ) : isCurriculumLocked ? (
+        <Panel
+          title="Department curriculum"
+          description="Published and in use — this curriculum can no longer be replaced."
+          actions={
+            <Badge tone="warning" icon={Lock}>
+              Locked
+            </Badge>
+          }
+        >
+          <div className="space-y-4 p-5">
+            <Alert tone="warning" title="Locked by recorded progress">
+              Instructors have already marked topics as covered for this department. Replacing the
+              curriculum now would invalidate their records and every student&apos;s progress, so
+              editing is disabled.
+            </Alert>
+
+            {curriculum.length === 0 ? (
+              <EmptyState icon={BookOpen} title="No topics published" />
+            ) : (
+              <ol className="divide-y divide-line overflow-hidden rounded-lg border border-line">
+                {curriculum.map((item, index) => (
+                  <li key={item.id} className="flex items-baseline gap-3 bg-surface px-4 py-2.5">
+                    <span className="w-6 shrink-0 text-xs font-semibold tabular-nums text-ink-faint">
+                      {index + 1}
+                    </span>
+                    <span className="text-sm text-ink">{item.title}</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        </Panel>
+      ) : (
+        <Panel
+          className="max-w-3xl"
+          title="Department curriculum"
+          description="One topic per line. Instructors in this department deliver them in this order."
+          footer={
+            <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+              {curriculumMessage ? (
+                <Alert tone={curriculumMessage.tone} className="sm:flex-1">
+                  {curriculumMessage.text}
+                </Alert>
+              ) : (
+                <p className="text-sm text-ink-subtle">
+                  Publishing replaces the current list. It locks once progress is recorded.
+                </p>
+              )}
+              <Button
+                type="submit"
+                form="curriculum-form"
+                isLoading={isSaving}
+                className="shrink-0"
+              >
+                Publish curriculum
+              </Button>
+            </div>
+          }
+        >
+          <form id="curriculum-form" onSubmit={saveCurriculum} className="p-5">
+            <Field
+              as="textarea"
+              label="Topics"
+              hint="Order matters — students see this sequence on their progress page."
+              value={topics}
+              onChange={(event) => setTopics(event.target.value)}
+              placeholder={'HTML fundamentals\nCSS and responsive design\nJavaScript fundamentals'}
+              inputClassName="min-h-80 resize-y font-mono leading-7"
+            />
+            <p className="mt-2 text-xs text-ink-subtle">
+              {parseTopics(topics).length} {parseTopics(topics).length === 1 ? 'topic' : 'topics'}
+            </p>
+          </form>
+        </Panel>
+      )}
+
+      <Modal
+        isOpen={Boolean(cohortToAssign)}
+        onClose={() => setCohortToAssign(null)}
+        title={cohortToAssign?.instructor?.isActive ? 'Reassign cohort' : 'Assign instructor'}
+        description={cohortToAssign?.name}
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => setCohortToAssign(null)}
+              disabled={isAssigning}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" form="assign-form" isLoading={isAssigning}>
+              Save assignment
+            </Button>
+          </>
+        }
+      >
+        <form id="assign-form" onSubmit={assignInstructor} className="space-y-4">
+          {assignError && <Alert tone="error">{assignError}</Alert>}
+
+          {cohortToAssign?.instructor?.isActive && (
+            <p className="text-sm text-ink-muted">
+              Currently delivered by{' '}
+              <span className="font-semibold text-ink">{cohortToAssign.instructor.name}</span>.
+              Recorded progress stays with the cohort.
+            </p>
+          )}
+
+          <Field
+            as="select"
+            label="Instructor"
+            value={selectedInstructorId}
+            onChange={(event) => setSelectedInstructorId(event.target.value)}
+            required
+          >
+            <option value="">Select an instructor</option>
+            {instructors.map((instructor) => (
+              <option key={instructor.id} value={instructor.id}>
+                {instructor.name} · {instructor.cohorts.length} cohorts
+              </option>
+            ))}
+          </Field>
+        </form>
+      </Modal>
+    </div>
+  );
+}
