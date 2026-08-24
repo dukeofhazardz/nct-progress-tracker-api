@@ -9,113 +9,73 @@ datasource db {
   provider = "postgresql"
 }
 
-enum Role {
-  ADMIN
-  INSTRUCTOR
-  STUDENT
-}
-
-enum DisputeStatus {
-  PENDING
-  RESOLVED
-}
-
-model User {
-  id           String       @id @default(uuid())
-  username     String       @unique
-  email        String?      @unique
+model Instructor {
+  id           String      @id @default(uuid())
+  email        String      @unique
   password     String
-  name         String
-  role         Role
-  isActive     Boolean      @default(true)
+  firstName    String?
+  lastName     String?
   departmentId String?
-  department   Department?  @relation(fields: [departmentId], references: [id])
-  cohorts      Cohort[]     @relation("InstructorCohorts")
-  memberships  Enrollment[]
-  disputes     Dispute[]
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  department   Department? @relation(fields: [departmentId], references: [id])
+  cohorts      Cohort[]    @relation("InstructorCohorts")
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
 
-  @@index([departmentId, role])
+  @@index([email])
 }
 
 model Department {
-  id         String           @id @default(uuid())
-  name       String           @unique
-  users      User[]
-  cohorts    Cohort[]
-  curriculum CurriculumItem[]
-  createdAt  DateTime         @default(now())
-}
+  id          String       @id @default(uuid())
+  name        String       @unique
+  cohorts     Cohort[]
+  instructors Instructor[]
+  curriculum  Curriculum[]
+  syllabi     Syllabus[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
-model CurriculumItem {
-  id           String      @id @default(uuid())
-  departmentId String
-  department   Department  @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  title        String
-  description  String?
-  position     Int
-  progress     Progress[]
-  disputes     Dispute[]
-
-  @@unique([departmentId, position])
-  @@index([departmentId])
+  @@index([name])
 }
 
 model Cohort {
-  id           String       @id @default(uuid())
-  name         String
+  id           String     @id @default(uuid())
+  name         String     @unique
+  instructorId String
   departmentId String
-  department   Department   @relation(fields: [departmentId], references: [id])
-  instructorId String?
-  instructor   User?        @relation("InstructorCohorts", fields: [instructorId], references: [id], onDelete: SetNull)
-  enrollments  Enrollment[]
-  progress     Progress[]
-  disputes     Dispute[]
-  isActive     Boolean      @default(true)
-  createdAt    DateTime     @default(now())
+  instructor   Instructor @relation("InstructorCohorts", fields: [instructorId], references: [id])
+  department   Department @relation(fields: [departmentId], references: [id])
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
-  @@unique([departmentId, name])
-  @@index([instructorId, isActive])
+  @@index([name])
 }
 
-model Enrollment {
-  id        String   @id @default(uuid())
-  cohortId  String
-  cohort    Cohort   @relation(fields: [cohortId], references: [id], onDelete: Cascade)
-  studentId String
-  student   User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
+model Curriculum {
+  id           String     @id @default(uuid())
+  name         String     @unique
+  fileName     String
+  fileType     String
+  filePath     String
+  uploadedBy   String
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id])
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
-  @@unique([cohortId, studentId])
-  @@index([studentId])
+  @@index([name])
 }
 
-model Progress {
-  id               String         @id @default(uuid())
-  cohortId         String
-  cohort           Cohort         @relation(fields: [cohortId], references: [id], onDelete: Cascade)
-  curriculumItemId String
-  curriculumItem   CurriculumItem @relation(fields: [curriculumItemId], references: [id], onDelete: Cascade)
-  completedAt      DateTime        @default(now())
+model Syllabus {
+  id              String     @id @default(uuid())
+  courseTitle     String
+  difficultyLevel String
+  durationWeeks   Int
+  learningGoals   String[]
+  content         Json
+  departmentId    String
+  department      Department @relation(fields: [departmentId], references: [id])
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
 
-  @@unique([cohortId, curriculumItemId])
-  @@index([cohortId])
-}
-
-model Dispute {
-  id               String         @id @default(uuid())
-  studentId        String
-  student          User           @relation(fields: [studentId], references: [id])
-  cohortId         String
-  cohort           Cohort         @relation(fields: [cohortId], references: [id])
-  curriculumItemId String
-  curriculumItem   CurriculumItem @relation(fields: [curriculumItemId], references: [id])
-  reason           String
-  status           DisputeStatus  @default(PENDING)
-  resolvedAt       DateTime?
-  createdAt        DateTime       @default(now())
-
-  @@index([status, createdAt])
-  @@index([studentId])
+  @@index([courseTitle])
 }
