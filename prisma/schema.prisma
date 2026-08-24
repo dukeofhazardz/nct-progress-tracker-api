@@ -11,6 +11,7 @@ datasource db {
 
 enum Role {
   ADMIN
+  HOD
   INSTRUCTOR
   STUDENT
 }
@@ -20,32 +21,52 @@ enum DisputeStatus {
   RESOLVED
 }
 
+/// Two different department relationships coexist deliberately:
+///   - `User.departmentId` is the single department an INSTRUCTOR works in.
+///     Cohort creation and assignment validation both depend on it.
+///   - `DepartmentMember` is the set of departments a HOD heads, or a STUDENT
+///     studies in. Both are many-to-many.
 model User {
-  id           String       @id @default(uuid())
-  username     String       @unique
-  email        String?      @unique
+  id           String             @id @default(uuid())
+  username     String             @unique
+  email        String?            @unique
   password     String
   name         String
   role         Role
-  isActive     Boolean      @default(true)
+  isActive     Boolean            @default(true)
   departmentId String?
-  department   Department?  @relation(fields: [departmentId], references: [id])
-  cohorts      Cohort[]     @relation("InstructorCohorts")
+  department   Department?        @relation(fields: [departmentId], references: [id])
+  memberOf     DepartmentMember[]
+  cohorts      Cohort[]           @relation("InstructorCohorts")
   memberships  Enrollment[]
   disputes     Dispute[]
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
 
   @@index([departmentId, role])
 }
 
 model Department {
-  id         String           @id @default(uuid())
-  name       String           @unique
+  id         String             @id @default(uuid())
+  name       String             @unique
   users      User[]
+  members    DepartmentMember[]
   cohorts    Cohort[]
   curriculum CurriculumItem[]
-  createdAt  DateTime         @default(now())
+  createdAt  DateTime           @default(now())
+}
+
+/// A HOD heading a department, or a student registered for one.
+model DepartmentMember {
+  id           String     @id @default(uuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@unique([userId, departmentId])
+  @@index([departmentId])
 }
 
 model CurriculumItem {

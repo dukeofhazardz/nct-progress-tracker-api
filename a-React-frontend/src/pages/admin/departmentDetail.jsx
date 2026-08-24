@@ -3,6 +3,8 @@ import { useParams } from 'react-router-dom';
 import { BookOpen, Lock, RotateCw, Users } from 'lucide-react';
 import { tracker } from '../../api/services/trackerService';
 import useFetch from '../../hooks/useFetch';
+import initials from '../../utils/initials';
+import { formatDate, formatDateTime } from '../../utils/dateFormatter';
 import Alert from '../../components/ui/Alert';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
@@ -52,6 +54,24 @@ export default function DepartmentDetail() {
   const [selectedInstructorId, setSelectedInstructorId] = useState('');
   const [isAssigning, setIsAssigning] = useState(false);
   const [assignError, setAssignError] = useState('');
+
+  // Roster of whichever cohort's student count was clicked.
+  const [rosterCohort, setRosterCohort] = useState(null);
+  const [roster, setRoster] = useState({ status: 'loading', students: [] });
+
+  const openRoster = async (cohort) => {
+    setRosterCohort(cohort);
+    setRoster({ status: 'loading', students: [] });
+    try {
+      setRoster({ status: 'ready', students: await tracker.cohortStudents(cohort.id) });
+    } catch (requestError) {
+      setRoster({
+        status: 'error',
+        students: [],
+        message: requestError.response?.data?.message || 'Could not load the roster.',
+      });
+    }
+  };
 
   const saveCurriculum = async (event) => {
     event.preventDefault();
@@ -210,7 +230,18 @@ export default function DepartmentDetail() {
                       <TR key={cohort.id} className="hover:bg-surface-raised">
                         <TD className="font-medium text-ink">{cohort.name}</TD>
                         <TD align="right" className="text-ink-muted">
-                          {cohort._count.enrollments}
+                          {cohort._count.enrollments === 0 ? (
+                            <span className="text-ink-faint">0</span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => openRoster(cohort)}
+                              className="rounded font-medium text-brand-700 underline decoration-brand-300 underline-offset-2 transition-colors hover:text-brand-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+                            >
+                              {cohort._count.enrollments}
+                              <span className="sr-only"> students — view roster</span>
+                            </button>
+                          )}
                         </TD>
                         <TD>
                           {hasInstructor ? (
@@ -265,10 +296,10 @@ export default function DepartmentDetail() {
               <EmptyState
                 icon={Users}
                 title="No active instructors"
-                description="Assign instructors to this department from the Instructors page."
+                description="Assign instructors to this department from the Staff page."
                 action={
-                  <Button variant="secondary" to="/admin/instructors">
-                    Go to instructors
+                  <Button variant="secondary" to="/admin/staff">
+                    Go to staff
                   </Button>
                 }
               />
@@ -398,6 +429,60 @@ export default function DepartmentDetail() {
           </form>
         </Panel>
       )}
+
+      <Modal
+        isOpen={Boolean(rosterCohort)}
+        onClose={() => setRosterCohort(null)}
+        title="Cohort roster"
+        description={rosterCohort?.name}
+        footer={
+          <Button variant="secondary" onClick={() => setRosterCohort(null)}>
+            Close
+          </Button>
+        }
+      >
+        {roster.status === 'loading' && (
+          <div className="space-y-2">
+            {[0, 1, 2].map((key) => (
+              <Skeleton key={key} className="h-10 w-full" />
+            ))}
+          </div>
+        )}
+
+        {roster.status === 'error' && <Alert tone="error">{roster.message}</Alert>}
+
+        {roster.status === 'ready' &&
+          (roster.students.length === 0 ? (
+            <EmptyState
+              icon={Users}
+              title="Nobody enrolled yet"
+              description="The instructor enrols students from their own workspace."
+            />
+          ) : (
+            <ul className="divide-y divide-line overflow-hidden rounded-lg border border-line">
+              {roster.students.map((student) => (
+                <li key={student.id} className="flex items-center gap-3 bg-surface px-3 py-2.5">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-100 text-[11px] font-bold text-brand-800">
+                    {initials(student.name)}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-ink">{student.name}</p>
+                    <p className="truncate text-xs text-ink-subtle">
+                      @{student.username}
+                      {student.email ? ` · ${student.email}` : ''}
+                    </p>
+                  </div>
+                  <span
+                    className="shrink-0 whitespace-nowrap text-xs text-ink-subtle"
+                    title={formatDateTime(student.enrolledAt)}
+                  >
+                    {formatDate(student.enrolledAt)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ))}
+      </Modal>
 
       <Modal
         isOpen={Boolean(cohortToAssign)}

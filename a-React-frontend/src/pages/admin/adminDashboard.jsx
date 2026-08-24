@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Building2, Plus, RotateCw } from 'lucide-react';
 import { tracker } from '../../api/services/trackerService';
+import { useAuth } from '../../context/authContext';
 import useFetch from '../../hooks/useFetch';
 import initials from '../../utils/initials';
 import Alert from '../../components/ui/Alert';
@@ -34,6 +35,8 @@ const plural = (count, word) => `${count} ${count === 1 ? word : `${word}s`}`;
 export default function AdminDashboard() {
   const { data, status, error, reload } = useFetch(() => tracker.departments(), []);
   const departments = data ?? [];
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [departmentName, setDepartmentName] = useState('');
@@ -86,12 +89,20 @@ export default function AdminDashboard() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Departments"
-        subtitle="Curriculum coverage across every department, instructor and cohort."
+        title={isAdmin ? 'Departments' : 'My departments'}
+        subtitle={
+          isAdmin
+            ? 'Curriculum coverage across every department, instructor and cohort.'
+            : 'Curriculum coverage across the departments you head.'
+        }
         actions={
-          <Button icon={Plus} onClick={() => setIsModalOpen(true)}>
-            Add department
-          </Button>
+          // Only an administrator creates departments; a HOD administers the ones
+          // they already head.
+          isAdmin && (
+            <Button icon={Plus} onClick={() => setIsModalOpen(true)}>
+              Add department
+            </Button>
+          )
         }
       />
 
@@ -139,12 +150,18 @@ export default function AdminDashboard() {
         <Panel>
           <EmptyState
             icon={Building2}
-            title="No departments yet"
-            description="Create a department, then add instructors and publish its curriculum."
+            title={isAdmin ? 'No departments yet' : 'No departments assigned'}
+            description={
+              isAdmin
+                ? 'Create a department, then add instructors and publish its curriculum.'
+                : 'You do not head any departments yet. An administrator assigns them to your account.'
+            }
             action={
-              <Button icon={Plus} onClick={() => setIsModalOpen(true)}>
-                Add department
-              </Button>
+              isAdmin && (
+                <Button icon={Plus} onClick={() => setIsModalOpen(true)}>
+                  Add department
+                </Button>
+              )
             }
           />
         </Panel>

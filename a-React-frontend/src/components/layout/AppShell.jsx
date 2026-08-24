@@ -5,19 +5,20 @@ import TopBar from './TopBar';
 
 const contextLabels = {
   ADMIN: 'Administration',
+  HOD: 'Department management',
   INSTRUCTOR: 'Instructor workspace',
   STUDENT: 'Student progress',
 };
 
 /**
- * Admin has three nav destinations and gets the sidebar. Instructor and student
- * have exactly one each, so they get a top bar only rather than 256px of chrome
- * holding a single link.
+ * Admins and HODs have three nav destinations and get the sidebar. Instructor and
+ * student have exactly one each, so they get a top bar only rather than 256px of
+ * chrome holding a single link.
  */
 export default function AppShell({ children }) {
   const { user } = useAuth();
   const [isNavOpen, setIsNavOpen] = useState(false);
-  const hasSidebar = user?.role === 'ADMIN';
+  const hasSidebar = user?.role === 'ADMIN' || user?.role === 'HOD';
 
   if (!hasSidebar) {
     return (
