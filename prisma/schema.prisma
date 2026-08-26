@@ -47,13 +47,13 @@ model User {
 }
 
 model Department {
-  id         String             @id @default(uuid())
-  name       String             @unique
-  users      User[]
-  members    DepartmentMember[]
-  cohorts    Cohort[]
-  curriculum CurriculumItem[]
-  createdAt  DateTime           @default(now())
+  id                 String              @id @default(uuid())
+  name               String              @unique
+  users              User[]
+  members            DepartmentMember[]
+  cohorts            Cohort[]
+  curriculumVersions CurriculumVersion[]
+  createdAt          DateTime            @default(now())
 }
 
 /// A HOD heading a department, or a student registered for one.
@@ -69,40 +69,66 @@ model DepartmentMember {
   @@index([departmentId])
 }
 
-model CurriculumItem {
-  id           String      @id @default(uuid())
+/// One published revision of a department's curriculum. Publishing never edits or
+/// deletes topics — it appends a new version — so a cohort that has already started
+/// keeps delivering, and reporting against, exactly the list it began with.
+///
+/// The department's *current* curriculum is simply its highest `version`.
+model CurriculumVersion {
+  id           String           @id @default(uuid())
   departmentId String
-  department   Department  @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  title        String
-  description  String?
-  position     Int
-  progress     Progress[]
-  disputes     Dispute[]
+  department   Department       @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  version      Int
+  publishedAt  DateTime         @default(now())
+  items        CurriculumItem[]
+  cohorts      Cohort[]
 
-  @@unique([departmentId, position])
-  @@index([departmentId])
+  @@unique([departmentId, version])
+  @@index([departmentId, version])
+}
+
+model CurriculumItem {
+  id          String            @id @default(uuid())
+  versionId   String
+  version     CurriculumVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  position    Int
+  progress    Progress[]
+  disputes    Dispute[]
+
+  @@unique([versionId, position])
+  @@index([versionId])
 }
 
 model Cohort {
-  id           String       @id @default(uuid())
-  name         String
-  departmentId String
-  department   Department   @relation(fields: [departmentId], references: [id])
-  instructorId String?
-  instructor   User?        @relation("InstructorCohorts", fields: [instructorId], references: [id], onDelete: SetNull)
-  enrollments  Enrollment[]
-  progress     Progress[]
-  disputes     Dispute[]
-  isActive     Boolean      @default(true)
+  id                  String             @id @default(uuid())
+  name                String
+  departmentId        String
+  department          Department         @relation(fields: [departmentId], references: [id])
+  instructorId        String?
+  instructor          User?              @relation("InstructorCohorts", fields: [instructorId], references: [id], onDelete: SetNull)
+  enrollments         Enrollment[]
+  progress            Progress[]
+  disputes            Dispute[]
+  /// The curriculum revision this cohort is delivering. Null means it has not
+  /// started yet, in which case it follows whatever the department has published
+  /// most recently — that is what lets a republish reach cohorts that have not
+  /// begun. It is pinned the moment the instructor records the first topic, and
+  /// never unpinned, so a later republish cannot swap the list out mid-delivery.
+  curriculumVersionId String?
+  curriculumVersion   CurriculumVersion? @relation(fields: [curriculumVersionId], references: [id], onDelete: Restrict)
+  isActive            Boolean            @default(true)
   /// Set when the instructor marks delivery finished; null while in progress.
   /// Separate from `isActive`, which means "not archived" — a completed cohort is
   /// still a live record that admins, HODs and its students can read.
-  completedAt  DateTime?
-  createdAt    DateTime     @default(now())
+  completedAt         DateTime?
+  createdAt           DateTime           @default(now())
 
   @@unique([departmentId, name])
   @@index([instructorId, isActive])
   @@index([departmentId, completedAt])
+  @@index([curriculumVersionId])
 }
 
 model Enrollment {
@@ -123,7 +149,7 @@ model Progress {
   cohort           Cohort         @relation(fields: [cohortId], references: [id], onDelete: Cascade)
   curriculumItemId String
   curriculumItem   CurriculumItem @relation(fields: [curriculumItemId], references: [id], onDelete: Cascade)
-  completedAt      DateTime        @default(now())
+  completedAt      DateTime       @default(now())
 
   @@unique([cohortId, curriculumItemId])
   @@index([cohortId])

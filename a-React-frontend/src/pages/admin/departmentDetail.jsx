@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { BookOpen, CheckCircle2, Lock, RotateCw, Users } from 'lucide-react';
+import { CheckCircle2, RotateCw, Users } from 'lucide-react';
 import { tracker } from '../../api/services/trackerService';
 import useFetch from '../../hooks/useFetch';
 import initials from '../../utils/initials';
@@ -8,6 +8,7 @@ import { formatDate, formatDateTime } from '../../utils/dateFormatter';
 import Alert from '../../components/ui/Alert';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
+import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import EmptyState from '../../components/ui/EmptyState';
 import Field from '../../components/ui/Field';
 import Modal from '../../components/ui/Modal';
@@ -18,10 +19,19 @@ import SegmentedControl from '../../components/ui/SegmentedControl';
 import Skeleton from '../../components/ui/Skeleton';
 import { Table, TBody, TD, TH, THead, TR } from '../../components/ui/Table';
 
-const averageProgress = (cohorts) =>
-  cohorts.length
-    ? Math.round(cohorts.reduce((total, cohort) => total + cohort.progressPercent, 0) / cohorts.length)
-    : 0;
+/**
+ * Coverage across a set of cohorts, weighted by each cohort's own topic count.
+ * Cohorts pinned to different curriculum versions have different denominators, so
+ * averaging their percentages would let a short list outweigh a long one — and
+ * would disagree with the figure `GET /departments` reports for the same
+ * department.
+ */
+const averageProgress = (cohorts) => {
+  const trackable = cohorts.reduce((total, cohort) => total + cohort.topicCount, 0);
+  if (!trackable) return 0;
+  const covered = cohorts.reduce((total, cohort) => total + cohort.progress.length, 0);
+  return Math.round((covered / trackable) * 100);
+};
 
 const toTopicLines = (curriculum) => curriculum.map((item) => item.title).join('\n');
 
@@ -50,6 +60,9 @@ export default function DepartmentDetail() {
 
   const [isSaving, setIsSaving] = useState(false);
   const [curriculumMessage, setCurriculumMessage] = useState(null);
+  // Set when the API reports cohorts mid-delivery; holds the topics to re-submit
+  // once the admin has acknowledged that those cohorts keep their own list.
+  const [publishWarning, setPublishWarning] = useState(null);
 
   const [cohortToAssign, setCohortToAssign] = useState(null);
   const [selectedInstructorId, setSelectedInstructorId] = useState('');
@@ -74,30 +87,55 @@ export default function DepartmentDetail() {
     }
   };
 
-  const saveCurriculum = async (event) => {
+  /**
+   * Publishing is a two-step exchange. The first attempt is refused with the list
+   * of cohorts already in progress, which the admin confirms before it goes
+   * through; the server owns that list because only it knows every cohort's
+   * pinned version.
+   */
+  const publishCurriculum = async (items, { acknowledge = false } = {}) => {
+    setIsSaving(true);
+    setCurriculumMessage(null);
+
+    try {
+      const published = await tracker.updateCurriculum(id, items, { acknowledge });
+      const kept = published.cohortsInProgress;
+      setPublishWarning(null);
+      await reload({ quiet: true });
+      setCurriculumMessage({
+        tone: 'success',
+        text: kept
+          ? `Curriculum v${published.version} published. ${kept} ${kept === 1 ? 'cohort' : 'cohorts'} already in progress kept the list they started with.`
+          : `Curriculum v${published.version} published successfully.`,
+      });
+    } catch (requestError) {
+      const data = requestError.response?.data;
+
+      // Not a failure — the publish is being held until the warning is seen.
+      if (data?.requiresAcknowledgement) {
+        setPublishWarning({ items, cohorts: data.affectedCohorts });
+        return;
+      }
+
+      setCurriculumMessage({
+        tone: 'error',
+        text: data?.message || 'Could not publish the curriculum.',
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const saveCurriculum = (event) => {
     event.preventDefault();
     const items = parseTopics(topics).map((title) => ({ title }));
 
     if (!items.length) {
       setCurriculumMessage({ tone: 'error', text: 'Add at least one curriculum topic.' });
-      return;
+      return undefined;
     }
 
-    setIsSaving(true);
-    setCurriculumMessage(null);
-
-    try {
-      await tracker.updateCurriculum(id, items);
-      await reload({ quiet: true });
-      setCurriculumMessage({ tone: 'success', text: 'Curriculum published successfully.' });
-    } catch (requestError) {
-      setCurriculumMessage({
-        tone: 'error',
-        text: requestError.response?.data?.message || 'Could not publish the curriculum.',
-      });
-    } finally {
-      setIsSaving(false);
-    }
+    return publishCurriculum(items);
   };
 
   const openAssign = (cohort) => {
@@ -161,19 +199,17 @@ export default function DepartmentDetail() {
   const inProgressCohorts = cohorts.filter((cohort) => !cohort.completedAt);
   const shownCohorts = cohortView === 'completed' ? completedCohorts : inProgressCohorts;
 
-  /**
-   * The API refuses to replace a curriculum once any progress exists (409). This
-   * only sees active cohorts, so the server check stays authoritative — but it
-   * catches the common case before the admin retypes everything.
-   */
-  const isCurriculumLocked = cohorts.some((cohort) => cohort.progress.length > 0);
-
   const stats = [
     ['Instructors', instructors.length],
     ['Cohorts in progress', inProgressCohorts.length],
     ['Completed cohorts', completedCohorts.length],
     ['Curriculum topics', curriculum.length],
-    ['Average progress', cohorts.length ? `${averageProgress(cohorts)}%` : '—'],
+    // Coverage is meaningless without a published curriculum, matching the
+    // departments list.
+    [
+      'Average progress',
+      cohorts.length && curriculum.length ? `${averageProgress(cohorts)}%` : '—',
+    ],
   ];
 
   return (
@@ -257,6 +293,12 @@ export default function DepartmentDetail() {
                   {shownCohorts.map((cohort) => {
                     const hasInstructor = Boolean(cohort.instructor?.isActive);
                     const isDone = Boolean(cohort.completedAt);
+                    // Pinned below the department's current version: this cohort
+                    // started before the latest curriculum was published.
+                    const isOutdated =
+                      cohort.curriculumVersion &&
+                      department.curriculumVersion &&
+                      cohort.curriculumVersion.version < department.curriculumVersion.version;
                     return (
                       <TR key={cohort.id} className="hover:bg-surface-raised">
                         <TD className="font-medium text-ink">
@@ -268,6 +310,12 @@ export default function DepartmentDetail() {
                               </Badge>
                             )}
                           </span>
+                          {isOutdated && (
+                            <p className="mt-0.5 text-xs font-normal text-ink-subtle">
+                              Curriculum v{cohort.curriculumVersion.version} ·{' '}
+                              {cohort.topicCount} topics
+                            </p>
+                          )}
                         </TD>
                         <TD align="right" className="text-ink-muted">
                           {cohort._count.enrollments === 0 ? (
@@ -407,44 +455,19 @@ export default function DepartmentDetail() {
             )}
           </Panel>
         </>
-      ) : isCurriculumLocked ? (
-        <Panel
-          title="Department curriculum"
-          description="Published and in use — this curriculum can no longer be replaced."
-          actions={
-            <Badge tone="warning" icon={Lock}>
-              Locked
-            </Badge>
-          }
-        >
-          <div className="space-y-4 p-5">
-            <Alert tone="warning" title="Locked by recorded progress">
-              Instructors have already marked topics as covered for this department. Replacing the
-              curriculum now would invalidate their records and every student&apos;s progress, so
-              editing is disabled.
-            </Alert>
-
-            {curriculum.length === 0 ? (
-              <EmptyState icon={BookOpen} title="No topics published" />
-            ) : (
-              <ol className="divide-y divide-line overflow-hidden rounded-lg border border-line">
-                {curriculum.map((item, index) => (
-                  <li key={item.id} className="flex items-baseline gap-3 bg-surface px-4 py-2.5">
-                    <span className="w-6 shrink-0 text-xs font-semibold tabular-nums text-ink-faint">
-                      {index + 1}
-                    </span>
-                    <span className="text-sm text-ink">{item.title}</span>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </div>
-        </Panel>
       ) : (
         <Panel
           className="max-w-3xl"
           title="Department curriculum"
           description="One topic per line. Instructors in this department deliver them in this order."
+          actions={
+            department.curriculumVersion && (
+              <Badge tone="neutral">
+                v{department.curriculumVersion.version} · published{' '}
+                {formatDate(department.curriculumVersion.publishedAt)}
+              </Badge>
+            )
+          }
           footer={
             <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
               {curriculumMessage ? (
@@ -453,7 +476,8 @@ export default function DepartmentDetail() {
                 </Alert>
               ) : (
                 <p className="text-sm text-ink-subtle">
-                  Publishing replaces the current list. It locks once progress is recorded.
+                  Publishing adds a new version. Cohorts already in progress keep the list they
+                  started with.
                 </p>
               )}
               <Button
@@ -483,6 +507,40 @@ export default function DepartmentDetail() {
           </form>
         </Panel>
       )}
+
+      <ConfirmDialog
+        isOpen={Boolean(publishWarning)}
+        onClose={() => setPublishWarning(null)}
+        onConfirm={() => publishCurriculum(publishWarning.items, { acknowledge: true })}
+        title="Cohorts already in progress"
+        confirmLabel="Publish anyway"
+        tone="primary"
+        isBusy={isSaving}
+      >
+        <p>
+          Changes to the curriculum will not be applied to cohorts that have already started. They
+          keep the topics they began with:
+        </p>
+
+        <ul className="my-3 divide-y divide-line overflow-hidden rounded-lg border border-line">
+          {publishWarning?.cohorts.map((cohort) => (
+            <li
+              key={cohort.id}
+              className="flex items-baseline justify-between gap-3 bg-surface px-3 py-2"
+            >
+              <span className="font-medium text-ink">{cohort.name}</span>
+              <span className="shrink-0 text-xs text-ink-subtle">
+                v{cohort.version} · {cohort.topicsCovered} of {cohort.topicCount} covered
+              </span>
+            </li>
+          ))}
+        </ul>
+
+        <p>
+          The new list applies to cohorts that have not started yet, and to every cohort created
+          from now on.
+        </p>
+      </ConfirmDialog>
 
       <Modal
         isOpen={Boolean(rosterCohort)}

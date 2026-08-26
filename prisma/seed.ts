@@ -7,8 +7,8 @@ const topics = ["HTML fundamentals", "CSS and responsive design", "JavaScript fu
 
 async function main() {
   const department = await prisma.department.upsert({ where: { name: "Web Development" }, update: {}, create: { name: "Web Development" } });
-  if (await prisma.curriculumItem.count({ where: { departmentId: department.id } }) === 0) {
-    await prisma.curriculumItem.createMany({ data: topics.map((title, position) => ({ departmentId: department.id, title, position })) });
+  if (await prisma.curriculumVersion.count({ where: { departmentId: department.id } }) === 0) {
+    await prisma.curriculumVersion.create({ data: { departmentId: department.id, version: 1, items: { create: topics.map((title, position) => ({ title, position })) } } });
   }
   const username = process.env.ADMIN_USERNAME || "admin";
   const password = process.env.ADMIN_PASSWORD || "ChangeMe123!";
