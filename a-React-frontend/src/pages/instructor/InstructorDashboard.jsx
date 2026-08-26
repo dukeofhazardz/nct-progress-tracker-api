@@ -202,8 +202,19 @@ export default function InstructorDashboard() {
   };
 
   const totalStudents = cohorts.reduce((total, cohort) => total + cohort._count.enrollments, 0);
-  const averageProgress = cohorts.length
-    ? Math.round(cohorts.reduce((total, cohort) => total + cohort.progressPercent, 0) / cohorts.length)
+  // Weighted by each cohort's own list length: cohorts pinned to different
+  // curriculum versions have different denominators, and this has to match the
+  // coverage the administrator sees for this instructor on the department page.
+  const trackableTopics = cohorts.reduce((total, cohort) => total + cohort.curriculum.length, 0);
+  const averageProgress = trackableTopics
+    ? Math.round(
+        (cohorts.reduce(
+          (total, cohort) => total + cohort.curriculum.filter((topic) => topic.isCompleted).length,
+          0,
+        ) /
+          trackableTopics) *
+          100,
+      )
     : 0;
 
   const completedCount = cohorts.filter((cohort) => cohort.completedAt).length;
@@ -491,6 +502,19 @@ export default function InstructorDashboard() {
                             </ul>
                           ))}
                       </div>
+
+                      {/* Placed with the topics rather than in the already-dense
+                          header — it explains this list, not the cohort. */}
+                      {cohort.curriculumVersion?.isOutdated && (
+                        <div className="border-t border-line px-5 py-3">
+                          <Alert tone="info">
+                            You are delivering curriculum v{cohort.curriculumVersion.version}. Your
+                            department published v{cohort.curriculumVersion.currentVersion} on{' '}
+                            {formatDate(cohort.curriculumVersion.currentPublishedAt)}, which applies
+                            to cohorts starting from now — this one keeps the topics it began with.
+                          </Alert>
+                        </div>
+                      )}
 
                       {cohort.curriculum.length === 0 ? (
                         <EmptyState

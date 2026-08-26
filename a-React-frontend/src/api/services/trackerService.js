@@ -8,8 +8,13 @@ export const tracker = {
   addDepartment: (name) =>
     api.post('/departments', { name }).then((response) => response.data),
   department: (id) => api.get(`/departments/${id}`).then((response) => response.data),
-  updateCurriculum: (departmentId, items) =>
-    api.put(`/departments/${departmentId}/curriculum`, { items }).then((response) => response.data),
+  // Publishing appends a version rather than replacing topics. `acknowledge`
+  // confirms the admin has seen which cohorts are mid-delivery and will keep the
+  // list they started with; without it the API replies 409 with that list.
+  updateCurriculum: (departmentId, items, { acknowledge = false } = {}) =>
+    api
+      .put(`/departments/${departmentId}/curriculum`, { items, acknowledge })
+      .then((response) => response.data),
   // Instructors and heads of department share one set of endpoints — the two are
   // created, deactivated and reactivated identically.
   staff: () => api.get('/staff').then((response) => response.data),

@@ -24,14 +24,44 @@ const scopeOf = async (user) => user.role === Role.ADMIN
     ? null
     : (await prisma.departmentMember.findMany({ where: { userId: user.id }, select: { departmentId: true } })).map(m => m.departmentId);
 const inScope = (scope, departmentId) => !scope || (departmentId !== null && scope.includes(departmentId));
+/**
+ * A department's *current* curriculum is simply its highest version — spread this
+ * into an `include` on `curriculumVersions`. Publishing appends a version rather
+ * than editing topics, so a cohort already in progress keeps the list it began
+ * with; see `topicsFor` for how the two are reconciled.
+ */
+const CURRENT_VERSION = { orderBy: { version: "desc" }, take: 1, include: { items: { orderBy: { position: "asc" } } } };
+/** The version a cohort has been pinned to, if any, with its topics in order. */
+const PINNED_VERSION = { include: { items: { orderBy: { position: "asc" } } } };
+/**
+ * The topics a cohort delivers. A cohort is pinned the moment its instructor
+ * records the first topic; until then it follows the department, which is what
+ * lets a republish reach cohorts that have not started yet.
+ *
+ * Every read resolves the list this way rather than filtering versions itself, so
+ * there is no version filter to forget.
+ */
+const topicsFor = (cohort, department) => cohort.curriculumVersion?.items ?? department.curriculumVersions[0]?.items ?? [];
 router.get("/departments", allow(...MANAGERS), asyncHandler(async (req, res) => {
     const scope = await scopeOf(req.user);
     const rows = await prisma.department.findMany({
         where: scope ? { id: { in: scope } } : {},
-        include: { users: { where: { role: Role.INSTRUCTOR, isActive: true }, include: { _count: { select: { cohorts: { where: { isActive: true } } } } } }, curriculum: true, cohorts: { include: { progress: true } } },
+        // Counts only — this list never renders topic titles or progress rows.
+        include: {
+            users: { where: { role: Role.INSTRUCTOR, isActive: true }, include: { _count: { select: { cohorts: { where: { isActive: true } } } } } },
+            curriculumVersions: { orderBy: { version: "desc" }, take: 1, select: { _count: { select: { items: true } } } },
+            cohorts: { select: { completedAt: true, _count: { select: { progress: true } }, curriculumVersion: { select: { _count: { select: { items: true } } } } } }
+        },
         orderBy: { name: "asc" }
     });
-    res.json(rows.map(d => ({ id: d.id, name: d.name, instructorCount: d.users.length, cohortCount: d.cohorts.length, completedCohortCount: d.cohorts.filter(c => c.completedAt).length, topicCount: d.curriculum.length, progress: percent(d.cohorts.reduce((n, c) => n + c.progress.length, 0), d.cohorts.length * d.curriculum.length), instructors: d.users.map(i => ({ id: i.id, name: i.name, activeCohorts: i._count.cohorts })) })));
+    res.json(rows.map(d => {
+        const topicCount = d.curriculumVersions[0]?._count.items ?? 0;
+        // Cohorts pinned to different versions have different totals, so the
+        // denominator is the sum of each cohort's own list length rather than
+        // cohorts × current topics.
+        const trackable = d.cohorts.reduce((n, c) => n + (c.curriculumVersion?._count.items ?? topicCount), 0);
+        return { id: d.id, name: d.name, instructorCount: d.users.length, cohortCount: d.cohorts.length, completedCohortCount: d.cohorts.filter(c => c.completedAt).length, topicCount, progress: percent(d.cohorts.reduce((n, c) => n + c._count.progress, 0), trackable), instructors: d.users.map(i => ({ id: i.id, name: i.name, activeCohorts: i._count.cohorts })) };
+    }));
 }));
 // Creating departments stays with the administrator — a HOD administers the
 // departments they already head, but cannot mint new ones.
@@ -47,29 +77,75 @@ router.get("/departments/:id", allow(...MANAGERS), asyncHandler(async (req, res)
     const scope = await scopeOf(req.user);
     if (!inScope(scope, departmentId))
         return res.status(404).json({ message: "Department not found" });
-    const department = await prisma.department.findUnique({ where: { id: departmentId }, include: { curriculum: { orderBy: { position: "asc" } }, cohorts: { where: { isActive: true }, include: { progress: true, instructor: { select: { id: true, name: true, isActive: true } }, _count: { select: { enrollments: true } } }, orderBy: { createdAt: "desc" } }, users: { where: { role: Role.INSTRUCTOR, isActive: true }, include: { cohorts: { where: { isActive: true }, include: { progress: true, _count: { select: { enrollments: true } } } } } } } });
+    const department = await prisma.department.findUnique({ where: { id: departmentId }, include: { curriculumVersions: CURRENT_VERSION, cohorts: { where: { isActive: true }, include: { progress: true, curriculumVersion: { select: { version: true, _count: { select: { items: true } } } }, instructor: { select: { id: true, name: true, isActive: true } }, _count: { select: { enrollments: true } } }, orderBy: { createdAt: "desc" } }, users: { where: { role: Role.INSTRUCTOR, isActive: true }, include: { cohorts: { where: { isActive: true }, include: { progress: true, curriculumVersion: { select: { version: true, _count: { select: { items: true } } } }, _count: { select: { enrollments: true } } } } } } } });
     if (!department)
         return res.status(404).json({ message: "Department not found" });
-    res.json({ ...department, cohorts: department.cohorts.map(c => ({ ...c, progressPercent: percent(c.progress.length, department.curriculum.length) })), users: department.users.map(i => ({ ...i, password: undefined, cohorts: i.cohorts.map(c => ({ ...c, progressPercent: percent(c.progress.length, department.curriculum.length) })) })) });
+    const { curriculumVersions, cohorts, users, ...rest } = department;
+    const current = curriculumVersions[0] ?? null;
+    /**
+     * Each cohort reports against the list it is delivering, which for one already
+     * in progress may be an older version than the department's current one.
+     * `curriculumVersion` is null while a cohort has not started.
+     */
+    const shape = (c) => {
+        const topicCount = c.curriculumVersion?._count.items ?? current?.items.length ?? 0;
+        return { ...c, curriculumVersion: c.curriculumVersion && { version: c.curriculumVersion.version }, topicCount, progressPercent: percent(c.progress.length, topicCount) };
+    };
+    // `curriculum` stays the current version's topics under its original key — it is
+    // what the editor loads — with the version alongside it for the page header.
+    res.json({ ...rest, curriculum: current?.items ?? [], curriculumVersion: current && { version: current.version, publishedAt: current.publishedAt }, cohorts: cohorts.map(shape), users: users.map(i => ({ ...i, password: undefined, cohorts: i.cohorts.map(shape) })) });
 }));
+/**
+ * Publish a revision of the curriculum. Appends a version rather than replacing
+ * topics, which is what makes it safe to run while cohorts are mid-delivery: they
+ * keep the list they started with, and the new one applies to cohorts that have
+ * not started and to every future cohort.
+ */
 router.put("/departments/:id/curriculum", allow(...MANAGERS), asyncHandler(async (req, res) => {
     const departmentId = String(req.params.id);
     const scope = await scopeOf(req.user);
     if (!inScope(scope, departmentId))
         return res.status(404).json({ message: "Department not found" });
-    const items = (req.body.items || []).filter((x) => x.title?.trim());
+    const items = (req.body.items || [])
+        .filter((x) => x.title?.trim())
+        .map((x) => ({ title: x.title.trim(), description: x.description?.trim() || null }));
     if (!items.length)
         return res.status(400).json({ message: "Add at least one curriculum topic" });
-    const recordedProgress = await prisma.progress.count({
-        where: { cohort: { departmentId } }
+    const department = await prisma.department.findUnique({ where: { id: departmentId }, include: { curriculumVersions: CURRENT_VERSION } });
+    if (!department)
+        return res.status(404).json({ message: "Department not found" });
+    const current = department.curriculumVersions[0] ?? null;
+    // Publishing the same list again is not a republish, so it mints no version.
+    const unchanged = current
+        && current.items.length === items.length
+        && current.items.every((topic, i) => topic.title === items[i].title && topic.description === items[i].description);
+    if (unchanged)
+        return res.json({ items: current.items, version: current.version, publishedAt: current.publishedAt, cohortsInProgress: 0 });
+    /**
+     * A cohort is pinned to a version once its instructor records a topic, so one
+     * that is pinned and not yet completed is mid-delivery. The warning is enforced
+     * here rather than in the client because only the server knows every pin — and
+     * because an API caller should not be able to blunder past it either.
+     */
+    const inProgress = await prisma.cohort.findMany({
+        where: { departmentId, curriculumVersionId: { not: null }, completedAt: null },
+        select: { id: true, name: true, curriculumVersion: { select: { version: true, _count: { select: { items: true } } } }, _count: { select: { progress: true } } },
+        orderBy: { name: "asc" }
     });
-    if (recordedProgress > 0) {
+    if (inProgress.length && req.body.acknowledge !== true) {
         return res.status(409).json({
-            message: "This curriculum already has recorded progress and cannot be replaced."
+            message: "Changes to the curriculum will not be applied to cohorts that have already started.",
+            requiresAcknowledgement: true,
+            affectedCohorts: inProgress.map(c => ({ id: c.id, name: c.name, version: c.curriculumVersion.version, topicsCovered: c._count.progress, topicCount: c.curriculumVersion._count.items }))
         });
     }
-    await prisma.$transaction([prisma.curriculumItem.deleteMany({ where: { departmentId } }), ...items.map((x, position) => prisma.curriculumItem.create({ data: { departmentId, title: x.title.trim(), description: x.description, position } }))]);
-    res.json(await prisma.curriculumItem.findMany({ where: { departmentId }, orderBy: { position: "asc" } }));
+    // One statement, and nothing is deleted — so every recorded progress row and
+    // open dispute stays valid however many times the curriculum is republished.
+    const published = await prisma.curriculumVersion.create({
+        data: { departmentId, version: (current?.version ?? 0) + 1, items: { create: items.map((topic, position) => ({ ...topic, position })) } },
+        include: { items: { orderBy: { position: "asc" } } }
+    });
+    res.json({ items: published.items, version: published.version, publishedAt: published.publishedAt, cohortsInProgress: inProgress.length });
 }));
 /**
  * Staff accounts — instructors and heads of department. Both are created,
@@ -209,8 +285,21 @@ router.get("/cohorts/:id/students", allow(Role.ADMIN, Role.HOD, Role.INSTRUCTOR)
     res.json(enrollments.map(e => ({ ...e.student, enrolledAt: e.createdAt })));
 }));
 router.get("/instructor/cohorts", allow(Role.INSTRUCTOR), asyncHandler(async (req, res) => {
-    const cohorts = await prisma.cohort.findMany({ where: { instructorId: req.user.id }, include: { department: { include: { curriculum: { orderBy: { position: "asc" } } } }, progress: true, _count: { select: { enrollments: true } } }, orderBy: { createdAt: "desc" } });
-    res.json(cohorts.map(c => ({ ...c, curriculum: c.department.curriculum.map(item => ({ ...item, isCompleted: c.progress.some(p => p.curriculumItemId === item.id) })), progressPercent: percent(c.progress.length, c.department.curriculum.length) })));
+    const cohorts = await prisma.cohort.findMany({ where: { instructorId: req.user.id }, include: { department: { include: { curriculumVersions: CURRENT_VERSION } }, curriculumVersion: PINNED_VERSION, progress: true, _count: { select: { enrollments: true } } }, orderBy: { createdAt: "desc" } });
+    res.json(cohorts.map(({ department, curriculumVersion, ...c }) => {
+        const topics = topicsFor({ curriculumVersion }, department);
+        const current = department.curriculumVersions[0] ?? null;
+        const version = curriculumVersion?.version ?? current?.version ?? null;
+        return {
+            ...c,
+            department: { id: department.id, name: department.name },
+            curriculum: topics.map(item => ({ ...item, isCompleted: c.progress.some(p => p.curriculumItemId === item.id) })),
+            progressPercent: percent(c.progress.length, topics.length),
+            // `isOutdated` is how the dashboard explains why this cohort's topics differ
+            // from what the department has published since it started.
+            curriculumVersion: version === null ? null : { version, isOutdated: !!current && version < current.version, currentVersion: current?.version ?? null, currentPublishedAt: current?.publishedAt ?? null }
+        };
+    }));
 }));
 router.post("/instructor/cohorts", allow(Role.INSTRUCTOR), asyncHandler(async (req, res) => {
     const instructor = await prisma.user.findUnique({ where: { id: req.user.id } });
@@ -266,17 +355,32 @@ router.post("/instructor/cohorts/:cohortId/students", allow(Role.INSTRUCTOR), as
 router.put("/instructor/cohorts/:cohortId/progress/:itemId", allow(Role.INSTRUCTOR), asyncHandler(async (req, res) => {
     const cohortId = String(req.params.cohortId);
     const itemId = String(req.params.itemId);
-    const cohort = await prisma.cohort.findFirst({ where: { id: cohortId, instructorId: req.user.id } });
+    const cohort = await prisma.cohort.findFirst({ where: { id: cohortId, instructorId: req.user.id }, include: { department: { include: { curriculumVersions: CURRENT_VERSION } }, curriculumVersion: PINNED_VERSION } });
     if (!cohort)
         return res.status(404).json({ message: "Cohort not found" });
     // A completed cohort is frozen, otherwise unticking a topic would leave it
     // marked complete while sitting below 100%.
     if (cohort.completedAt)
         return res.status(409).json({ message: "This cohort is marked completed. Reopen it before changing recorded progress." });
-    if (req.body.completed)
-        await prisma.progress.upsert({ where: { cohortId_curriculumItemId: { cohortId: cohort.id, curriculumItemId: itemId } }, create: { cohortId: cohort.id, curriculumItemId: itemId }, update: { completedAt: new Date() } });
-    else
+    // The topic has to belong to the list this cohort is delivering, or a stale
+    // client could record one from a superseded version — or another department's.
+    const version = cohort.curriculumVersion ?? cohort.department.curriculumVersions[0] ?? null;
+    if (!version)
+        return res.status(400).json({ message: "This department has no published curriculum yet" });
+    if (!version.items.some(item => item.id === itemId))
+        return res.status(400).json({ message: "That topic is not part of this cohort's curriculum" });
+    if (req.body.completed) {
+        // Recording the first topic pins the cohort to the version it is delivering,
+        // so a later republish cannot swap the list out from under it. Unticking back
+        // to nothing does not unpin: the cohort has demonstrably started.
+        await prisma.$transaction([
+            prisma.progress.upsert({ where: { cohortId_curriculumItemId: { cohortId: cohort.id, curriculumItemId: itemId } }, create: { cohortId: cohort.id, curriculumItemId: itemId }, update: { completedAt: new Date() } }),
+            ...(cohort.curriculumVersionId ? [] : [prisma.cohort.update({ where: { id: cohort.id }, data: { curriculumVersionId: version.id } })])
+        ]);
+    }
+    else {
         await prisma.progress.deleteMany({ where: { cohortId: cohort.id, curriculumItemId: itemId } });
+    }
     res.status(204).send();
 }));
 /**
@@ -286,13 +390,15 @@ router.put("/instructor/cohorts/:cohortId/progress/:itemId", allow(Role.INSTRUCT
 router.patch("/instructor/cohorts/:cohortId/complete", allow(Role.INSTRUCTOR), asyncHandler(async (req, res) => {
     const cohort = await prisma.cohort.findFirst({
         where: { id: String(req.params.cohortId), instructorId: req.user.id },
-        include: { department: { include: { curriculum: { select: { id: true } } } }, progress: { select: { curriculumItemId: true } } }
+        include: { department: { include: { curriculumVersions: CURRENT_VERSION } }, curriculumVersion: PINNED_VERSION, progress: { select: { curriculumItemId: true } } }
     });
     if (!cohort)
         return res.status(404).json({ message: "Cohort not found" });
     if (cohort.completedAt)
         return res.status(409).json({ message: "This cohort is already marked completed" });
-    const topicIds = cohort.department.curriculum.map(item => item.id);
+    // Its own list, not the department's current one: a cohort pinned to a
+    // five-topic version still completes at five even if eight are published now.
+    const topicIds = topicsFor(cohort, cohort.department).map(item => item.id);
     if (!topicIds.length)
         return res.status(400).json({ message: "This department has no published curriculum yet" });
     const covered = new Set(cohort.progress.map(p => p.curriculumItemId));
@@ -318,20 +424,33 @@ router.patch("/instructor/cohorts/:cohortId/reopen", allow(Role.INSTRUCTOR), asy
 router.get("/student/progress", allow(Role.STUDENT), asyncHandler(async (req, res) => {
     const enrollments = await prisma.enrollment.findMany({
         where: { studentId: req.user.id, cohort: { isActive: true } },
-        include: { cohort: { include: { department: { include: { curriculum: { orderBy: { position: "asc" } } } }, progress: true, instructor: { select: { name: true } } } } }
+        include: { cohort: { include: { department: { include: { curriculumVersions: CURRENT_VERSION } }, curriculumVersion: PINNED_VERSION, progress: true, instructor: { select: { name: true } } } } }
     });
     res.json(enrollments
-        .map(({ cohort: c }) => ({
-        cohort: { id: c.id, name: c.name, department: c.department.name, instructor: c.instructor?.name || "Awaiting instructor assignment", completedAt: c.completedAt },
-        progressPercent: percent(c.progress.length, c.department.curriculum.length),
-        curriculum: c.department.curriculum.map(item => ({ ...item, isCompleted: c.progress.some(p => p.curriculumItemId === item.id) }))
-    }))
+        .map(({ cohort: c }) => {
+        // The list their own cohort is delivering — students are shown no version
+        // labels, so what they see is simply their topics.
+        const topics = topicsFor(c, c.department);
+        return {
+            cohort: { id: c.id, name: c.name, department: c.department.name, instructor: c.instructor?.name || "Awaiting instructor assignment", completedAt: c.completedAt },
+            progressPercent: percent(c.progress.length, topics.length),
+            curriculum: topics.map(item => ({ ...item, isCompleted: c.progress.some(p => p.curriculumItemId === item.id) }))
+        };
+    })
         .sort((a, b) => a.cohort.department.localeCompare(b.cohort.department)));
 }));
 router.post("/student/disputes", allow(Role.STUDENT), asyncHandler(async (req, res) => {
-    const enrolled = await prisma.enrollment.findFirst({ where: { studentId: req.user.id, cohortId: req.body.cohortId } });
+    const enrolled = await prisma.enrollment.findFirst({
+        where: { studentId: req.user.id, cohortId: req.body.cohortId },
+        include: { cohort: { include: { department: { include: { curriculumVersions: CURRENT_VERSION } }, curriculumVersion: PINNED_VERSION } } }
+    });
     if (!enrolled)
         return res.status(403).json({ message: "You are not enrolled in this cohort" });
+    // Disputes are raised against a topic the student can actually see, which is
+    // their cohort's list rather than whatever the department has published since.
+    const topics = topicsFor(enrolled.cohort, enrolled.cohort.department);
+    if (!topics.some(topic => topic.id === req.body.curriculumItemId))
+        return res.status(400).json({ message: "That topic is not part of this cohort's curriculum" });
     const dispute = await prisma.dispute.create({ data: { studentId: req.user.id, cohortId: req.body.cohortId, curriculumItemId: req.body.curriculumItemId, reason: req.body.reason } });
     res.status(201).json(dispute);
 }));

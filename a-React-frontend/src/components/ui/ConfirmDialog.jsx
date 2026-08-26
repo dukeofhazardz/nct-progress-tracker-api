@@ -29,7 +29,8 @@ export default function ConfirmDialog({
         </>
       }
     >
-      <p className="text-sm leading-6 text-ink-muted">{children}</p>
+      {/* A div, not a p: some callers pass a list alongside their prose. */}
+      <div className="text-sm leading-6 text-ink-muted">{children}</div>
     </Modal>
   );
 }

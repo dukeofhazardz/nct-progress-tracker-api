@@ -16,7 +16,9 @@
       "Bash(xargs -I{} echo \"TS errors: {}\")",
       "Bash(git push *)",
       "Bash(awk '{print \"behind: \"$1\"   ahead: \"$2}')",
-      "Bash(npm i *)"
+      "Bash(npm i *)",
+      "Read(//c/Users/israel/AppData/Local/Temp/nct-shots/**)",
+      "Read(//c/Users/israel/AppData/Local/Temp/nct-curriculum-ui/**)"
     ]
   }
 }
