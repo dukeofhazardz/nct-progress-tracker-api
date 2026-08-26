@@ -43,7 +43,7 @@ model User {
   createdAt    DateTime           @default(now())
   updatedAt    DateTime           @updatedAt
 
-  @@index([email])
+  @@index([departmentId, role])
 }
 
 model Department {
@@ -84,44 +84,64 @@ model CurriculumItem {
 }
 
 model Cohort {
-  id           String     @id @default(uuid())
-  name         String     @unique
-  instructorId String
+  id           String       @id @default(uuid())
+  name         String
   departmentId String
-  instructor   Instructor @relation("InstructorCohorts", fields: [instructorId], references: [id])
-  department   Department @relation(fields: [departmentId], references: [id])
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  department   Department   @relation(fields: [departmentId], references: [id])
+  instructorId String?
+  instructor   User?        @relation("InstructorCohorts", fields: [instructorId], references: [id], onDelete: SetNull)
+  enrollments  Enrollment[]
+  progress     Progress[]
+  disputes     Dispute[]
+  isActive     Boolean      @default(true)
+  /// Set when the instructor marks delivery finished; null while in progress.
+  /// Separate from `isActive`, which means "not archived" — a completed cohort is
+  /// still a live record that admins, HODs and its students can read.
+  completedAt  DateTime?
+  createdAt    DateTime     @default(now())
 
-  @@index([name])
+  @@unique([departmentId, name])
+  @@index([instructorId, isActive])
+  @@index([departmentId, completedAt])
 }
 
-model Curriculum {
-  id           String     @id @default(uuid())
-  name         String     @unique
-  fileName     String
-  fileType     String
-  filePath     String
-  uploadedBy   String
-  departmentId String
-  department   Department @relation(fields: [departmentId], references: [id])
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+model Enrollment {
+  id        String   @id @default(uuid())
+  cohortId  String
+  cohort    Cohort   @relation(fields: [cohortId], references: [id], onDelete: Cascade)
+  studentId String
+  student   User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
 
-  @@index([name])
+  @@unique([cohortId, studentId])
+  @@index([studentId])
 }
 
-model Syllabus {
-  id              String     @id @default(uuid())
-  courseTitle     String
-  difficultyLevel String
-  durationWeeks   Int
-  learningGoals   String[]
-  content         Json
-  departmentId    String
-  department      Department @relation(fields: [departmentId], references: [id])
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
+model Progress {
+  id               String         @id @default(uuid())
+  cohortId         String
+  cohort           Cohort         @relation(fields: [cohortId], references: [id], onDelete: Cascade)
+  curriculumItemId String
+  curriculumItem   CurriculumItem @relation(fields: [curriculumItemId], references: [id], onDelete: Cascade)
+  completedAt      DateTime        @default(now())
 
-  @@index([courseTitle])
+  @@unique([cohortId, curriculumItemId])
+  @@index([cohortId])
+}
+
+model Dispute {
+  id               String         @id @default(uuid())
+  studentId        String
+  student          User           @relation(fields: [studentId], references: [id])
+  cohortId         String
+  cohort           Cohort         @relation(fields: [cohortId], references: [id])
+  curriculumItemId String
+  curriculumItem   CurriculumItem @relation(fields: [curriculumItemId], references: [id])
+  reason           String
+  status           DisputeStatus  @default(PENDING)
+  resolvedAt       DateTime?
+  createdAt        DateTime       @default(now())
+
+  @@index([status, createdAt])
+  @@index([studentId])
 }

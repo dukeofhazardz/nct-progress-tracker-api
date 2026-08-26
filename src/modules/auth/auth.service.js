@@ -1,4 +1,4 @@
-import { prisma } from "../../lib/prisma";
+import { prisma } from "../../lib/prisma.js";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
 import { Role } from "../../generated/prisma/enums.js";
@@ -29,14 +29,7 @@ export const register = async (data) => {
         }
     }
     const hashed = await bcrypt.hash(data.password, 10);
-    if (!hashed) {
-        throw new Error("Error hashing password");
-    }
-    const existingInstructor = await prisma.instructor.findUnique({ where: { email: data.email } });
-    if (existingInstructor) {
-        throw new Error("Instructor with this email already exists");
-    }
-    const instructor = await prisma.instructor.create({
+    return prisma.user.create({
         data: {
             username,
             email: data.email || null,
@@ -61,7 +54,7 @@ export const login = async ({ username, email, password }) => {
         // legacy case-variant duplicates exist. Without an explicit order the row
         // returned is arbitrary — a deactivated twin could shadow the live account.
         orderBy: [{ isActive: "desc" }, { createdAt: "desc" }],
-        include: { department: true }
+        include: { department: true, memberOf: { include: { department: { select: { id: true, name: true } } } } }
     });
     if (!user)
         throw new Error("User not found");
@@ -77,5 +70,11 @@ export const login = async ({ username, email, password }) => {
     if (!valid)
         throw new Error("Invalid password");
     const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: "1d" });
-    return { token, user: { id: user.id, username: user.username, name: user.name, role: user.role, departmentId: user.departmentId, dept: user.department?.name } };
+    // `departments` covers HODs (who head several) and students (who may study in
+    // several); `dept` stays for the single-department instructor case the shell
+    // already renders.
+    const departments = user.role === Role.INSTRUCTOR
+        ? user.department ? [{ id: user.department.id, name: user.department.name }] : []
+        : user.memberOf.map(m => m.department);
+    return { token, user: { id: user.id, username: user.username, name: user.name, role: user.role, departmentId: user.departmentId, dept: user.department?.name, departments } };
 };

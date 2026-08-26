@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { BookOpen, Lock, RotateCw, Users } from 'lucide-react';
+import { BookOpen, CheckCircle2, Lock, RotateCw, Users } from 'lucide-react';
 import { tracker } from '../../api/services/trackerService';
 import useFetch from '../../hooks/useFetch';
 import initials from '../../utils/initials';
@@ -34,6 +34,7 @@ const parseTopics = (text) =>
 export default function DepartmentDetail() {
   const { id } = useParams();
   const [activeTab, setActiveTab] = useState('overview');
+  const [cohortView, setCohortView] = useState('active');
   const [topics, setTopics] = useState('');
 
   const load = useCallback(
@@ -156,6 +157,10 @@ export default function DepartmentDetail() {
 
   const { cohorts, users: instructors, curriculum } = department;
 
+  const completedCohorts = cohorts.filter((cohort) => cohort.completedAt);
+  const inProgressCohorts = cohorts.filter((cohort) => !cohort.completedAt);
+  const shownCohorts = cohortView === 'completed' ? completedCohorts : inProgressCohorts;
+
   /**
    * The API refuses to replace a curriculum once any progress exists (409). This
    * only sees active cohorts, so the server check stays authoritative — but it
@@ -165,7 +170,8 @@ export default function DepartmentDetail() {
 
   const stats = [
     ['Instructors', instructors.length],
-    ['Active cohorts', cohorts.length],
+    ['Cohorts in progress', inProgressCohorts.length],
+    ['Completed cohorts', completedCohorts.length],
     ['Curriculum topics', curriculum.length],
     ['Average progress', cohorts.length ? `${averageProgress(cohorts)}%` : '—'],
   ];
@@ -202,13 +208,36 @@ export default function DepartmentDetail() {
         <>
           <Panel
             title="Cohorts"
-            description="Assign unstaffed cohorts, or move an ongoing cohort to another instructor."
+            description={
+              cohortView === 'completed'
+                ? 'Delivery finished and signed off by the instructor.'
+                : 'Assign unstaffed cohorts, or move an ongoing cohort to another instructor.'
+            }
+            actions={
+              completedCohorts.length > 0 && (
+                <SegmentedControl
+                  label="Cohort status"
+                  value={cohortView}
+                  onChange={setCohortView}
+                  options={[
+                    { value: 'active', label: 'In progress', count: inProgressCohorts.length },
+                    { value: 'completed', label: 'Completed', count: completedCohorts.length },
+                  ]}
+                />
+              )
+            }
           >
-            {cohorts.length === 0 ? (
+            {shownCohorts.length === 0 ? (
               <EmptyState
-                icon={Users}
-                title="No active cohorts"
-                description="Instructors in this department create cohorts from their own workspace."
+                icon={cohortView === 'completed' ? CheckCircle2 : Users}
+                title={
+                  cohortView === 'completed' ? 'No completed cohorts' : 'No cohorts in progress'
+                }
+                description={
+                  cohortView === 'completed'
+                    ? 'A cohort appears here once its instructor has covered every topic and marked it completed.'
+                    : 'Instructors in this department create cohorts from their own workspace.'
+                }
               />
             ) : (
               <Table>
@@ -218,17 +247,28 @@ export default function DepartmentDetail() {
                     <TH align="right">Students</TH>
                     <TH>Instructor</TH>
                     <TH className="w-48">Progress</TH>
+                    <TH>{cohortView === 'completed' ? 'Completed' : 'Started'}</TH>
                     <TH align="right">
                       <span className="sr-only">Actions</span>
                     </TH>
                   </TR>
                 </THead>
                 <TBody>
-                  {cohorts.map((cohort) => {
+                  {shownCohorts.map((cohort) => {
                     const hasInstructor = Boolean(cohort.instructor?.isActive);
+                    const isDone = Boolean(cohort.completedAt);
                     return (
                       <TR key={cohort.id} className="hover:bg-surface-raised">
-                        <TD className="font-medium text-ink">{cohort.name}</TD>
+                        <TD className="font-medium text-ink">
+                          <span className="flex items-center gap-2">
+                            {cohort.name}
+                            {isDone && (
+                              <Badge tone="success" icon={CheckCircle2}>
+                                Completed
+                              </Badge>
+                            )}
+                          </span>
+                        </TD>
                         <TD align="right" className="text-ink-muted">
                           {cohort._count.enrollments === 0 ? (
                             <span className="text-ink-faint">0</span>
@@ -262,15 +302,29 @@ export default function DepartmentDetail() {
                             </span>
                           </div>
                         </TD>
-                        <TD align="right">
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => openAssign(cohort)}
-                            disabled={instructors.length === 0}
+                        <TD>
+                          <span
+                            className="whitespace-nowrap text-ink-muted"
+                            title={formatDateTime(cohort.completedAt ?? cohort.createdAt)}
                           >
-                            {hasInstructor ? 'Reassign' : 'Assign'}
-                          </Button>
+                            {formatDate(cohort.completedAt ?? cohort.createdAt)}
+                          </span>
+                        </TD>
+                        <TD align="right">
+                          {/* Reassigning a finished cohort would rewrite history, so
+                              the instructor reopens it first. */}
+                          {isDone ? (
+                            <span className="text-xs text-ink-faint">Locked</span>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => openAssign(cohort)}
+                              disabled={instructors.length === 0}
+                            >
+                              {hasInstructor ? 'Reassign' : 'Assign'}
+                            </Button>
+                          )}
                         </TD>
                       </TR>
                     );

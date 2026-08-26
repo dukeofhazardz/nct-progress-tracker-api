@@ -31,7 +31,7 @@ router.get("/departments", allow(...MANAGERS), asyncHandler(async (req, res) => 
         include: { users: { where: { role: Role.INSTRUCTOR, isActive: true }, include: { _count: { select: { cohorts: { where: { isActive: true } } } } } }, curriculum: true, cohorts: { include: { progress: true } } },
         orderBy: { name: "asc" }
     });
-    res.json(rows.map(d => ({ id: d.id, name: d.name, instructorCount: d.users.length, cohortCount: d.cohorts.length, topicCount: d.curriculum.length, progress: percent(d.cohorts.reduce((n, c) => n + c.progress.length, 0), d.cohorts.length * d.curriculum.length), instructors: d.users.map(i => ({ id: i.id, name: i.name, activeCohorts: i._count.cohorts })) })));
+    res.json(rows.map(d => ({ id: d.id, name: d.name, instructorCount: d.users.length, cohortCount: d.cohorts.length, completedCohortCount: d.cohorts.filter(c => c.completedAt).length, topicCount: d.curriculum.length, progress: percent(d.cohorts.reduce((n, c) => n + c.progress.length, 0), d.cohorts.length * d.curriculum.length), instructors: d.users.map(i => ({ id: i.id, name: i.name, activeCohorts: i._count.cohorts })) })));
 }));
 // Creating departments stays with the administrator — a HOD administers the
 // departments they already head, but cannot mint new ones.
@@ -269,11 +269,46 @@ router.put("/instructor/cohorts/:cohortId/progress/:itemId", allow(Role.INSTRUCT
     const cohort = await prisma.cohort.findFirst({ where: { id: cohortId, instructorId: req.user.id } });
     if (!cohort)
         return res.status(404).json({ message: "Cohort not found" });
+    // A completed cohort is frozen, otherwise unticking a topic would leave it
+    // marked complete while sitting below 100%.
+    if (cohort.completedAt)
+        return res.status(409).json({ message: "This cohort is marked completed. Reopen it before changing recorded progress." });
     if (req.body.completed)
         await prisma.progress.upsert({ where: { cohortId_curriculumItemId: { cohortId: cohort.id, curriculumItemId: itemId } }, create: { cohortId: cohort.id, curriculumItemId: itemId }, update: { completedAt: new Date() } });
     else
         await prisma.progress.deleteMany({ where: { cohortId: cohort.id, curriculumItemId: itemId } });
     res.status(204).send();
+}));
+/**
+ * Mark delivery finished. Whether every topic is covered is re-checked here
+ * rather than trusted from the client, which only hides the button.
+ */
+router.patch("/instructor/cohorts/:cohortId/complete", allow(Role.INSTRUCTOR), asyncHandler(async (req, res) => {
+    const cohort = await prisma.cohort.findFirst({
+        where: { id: String(req.params.cohortId), instructorId: req.user.id },
+        include: { department: { include: { curriculum: { select: { id: true } } } }, progress: { select: { curriculumItemId: true } } }
+    });
+    if (!cohort)
+        return res.status(404).json({ message: "Cohort not found" });
+    if (cohort.completedAt)
+        return res.status(409).json({ message: "This cohort is already marked completed" });
+    const topicIds = cohort.department.curriculum.map(item => item.id);
+    if (!topicIds.length)
+        return res.status(400).json({ message: "This department has no published curriculum yet" });
+    const covered = new Set(cohort.progress.map(p => p.curriculumItemId));
+    const remaining = topicIds.filter(id => !covered.has(id)).length;
+    if (remaining > 0)
+        return res.status(400).json({ message: `${remaining} ${remaining === 1 ? "topic has" : "topics have"} not been covered yet` });
+    res.json(await prisma.cohort.update({ where: { id: cohort.id }, data: { completedAt: new Date() } }));
+}));
+router.patch("/instructor/cohorts/:cohortId/reopen", allow(Role.INSTRUCTOR), asyncHandler(async (req, res) => {
+    const cohort = await prisma.cohort.findFirst({ where: { id: String(req.params.cohortId), instructorId: req.user.id } });
+    if (!cohort)
+        return res.status(404).json({ message: "Cohort not found" });
+    if (!cohort.completedAt)
+        return res.status(409).json({ message: "This cohort is not marked completed" });
+    // Recorded progress is untouched, so reopening and completing again is lossless.
+    res.json(await prisma.cohort.update({ where: { id: cohort.id }, data: { completedAt: null } }));
 }));
 /**
  * Every active course the student is enrolled in. Returns an array because a
@@ -287,7 +322,7 @@ router.get("/student/progress", allow(Role.STUDENT), asyncHandler(async (req, re
     });
     res.json(enrollments
         .map(({ cohort: c }) => ({
-        cohort: { id: c.id, name: c.name, department: c.department.name, instructor: c.instructor?.name || "Awaiting instructor assignment" },
+        cohort: { id: c.id, name: c.name, department: c.department.name, instructor: c.instructor?.name || "Awaiting instructor assignment", completedAt: c.completedAt },
         progressPercent: percent(c.progress.length, c.department.curriculum.length),
         curriculum: c.department.curriculum.map(item => ({ ...item, isCompleted: c.progress.some(p => p.curriculumItemId === item.id) }))
     }))

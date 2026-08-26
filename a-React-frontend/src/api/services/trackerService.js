@@ -29,6 +29,11 @@ export const tracker = {
     api.post(`/instructor/cohorts/${cohortId}/students`, { username }),
   setProgress: (cohortId, itemId, completed) =>
     api.put(`/instructor/cohorts/${cohortId}/progress/${itemId}`, { completed }),
+  // The server re-checks that every topic is covered; it does not trust the client.
+  completeCohort: (cohortId) =>
+    api.patch(`/instructor/cohorts/${cohortId}/complete`).then((response) => response.data),
+  reopenCohort: (cohortId) =>
+    api.patch(`/instructor/cohorts/${cohortId}/reopen`).then((response) => response.data),
   // An array — a student can be enrolled in courses across several departments.
   studentProgress: () => api.get('/student/progress').then((response) => response.data),
   dispute: (data) => api.post('/student/disputes', data).then((response) => response.data),

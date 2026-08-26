@@ -188,10 +188,13 @@ export default function AdminDashboard() {
                   {hasCurriculum ? `${department.progress}%` : '—'}
                 </p>
                 <ProgressBar value={hasCurriculum ? department.progress : 0} className="mt-2" />
-                <p className="mt-2 text-xs text-ink-subtle">
+                <p className="mt-2 flex flex-wrap items-center gap-x-1.5 text-xs text-ink-subtle">
                   {hasCurriculum
                     ? `${plural(department.topicCount, 'topic')} · ${plural(department.cohortCount, 'cohort')} · ${plural(department.instructorCount, 'instructor')}`
                     : `No curriculum published · ${plural(department.instructorCount, 'instructor')}`}
+                  {department.completedCohortCount > 0 && (
+                    <Badge tone="success">{department.completedCohortCount} completed</Badge>
+                  )}
                 </p>
 
                 {department.instructors?.length > 0 && (
