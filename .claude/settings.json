@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git checkout *)",
+      "Bash(cd \"c:\\\\Users\\\\israel\\\\Documents\\\\GitHub\\\\nct-progress-tracker-api\" && cat /tmp/nct-api.log | tail -25)",
+      "Read(//tmp/**)",
+      "Bash(node ./_verify.mjs)",
+      "Bash(node ./_state.mjs)",
+      "Bash(node ./_apply.mjs)",
+      "Bash(git rev-list *)",
+      "Bash(awk '{print \"behind origin: \"$1\" ahead of origin: \"$2}')",
+      "Bash(git add *)",
+      "Bash(git reset *)",
+      "Bash(git status *)",
+      "Bash(cp prisma/schema.prisma /tmp/schema-with-completion.prisma)",
+      "Bash(xargs -I{} echo \"TS errors: {}\")",
+      "Bash(git push *)",
+      "Bash(awk '{print \"behind: \"$1\"   ahead: \"$2}')",
+      "Bash(npm i *)"
+    ]
+  }
+}
