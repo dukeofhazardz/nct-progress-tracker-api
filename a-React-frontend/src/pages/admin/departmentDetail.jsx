@@ -1,7 +1,8 @@
 import { useCallback, useState } from 'react';
-import { useParams } from 'react-router-dom';
-import { CheckCircle2, RotateCw, Users } from 'lucide-react';
+import { Link, useParams } from 'react-router-dom';
+import { CheckCircle2, RotateCw, ShieldCheck, Users } from 'lucide-react';
 import { tracker } from '../../api/services/trackerService';
+import { useAuth } from '../../context/authContext';
 import useFetch from '../../hooks/useFetch';
 import initials from '../../utils/initials';
 import { formatDate, formatDateTime } from '../../utils/dateFormatter';
@@ -43,6 +44,8 @@ const parseTopics = (text) =>
 
 export default function DepartmentDetail() {
   const { id } = useParams();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
   const [activeTab, setActiveTab] = useState('overview');
   const [cohortView, setCohortView] = useState('active');
   const [topics, setTopics] = useState('');
@@ -193,14 +196,29 @@ export default function DepartmentDetail() {
     );
   }
 
-  const { cohorts, users: instructors, curriculum } = department;
+  const { cohorts, users: eligible, curriculum } = department;
+
+  // Everyone the server will accept as a deliverer here: this department's
+  // instructors, plus the heads who head it.
+  //
+  // A head only *counts* as delivering once they hold a cohort here, so
+  // "Instructors" keeps meaning "people delivering" — the same rule
+  // `GET /departments` applies to its own totals. The assign dropdown offers the
+  // wider list, because taking a cohort on is how a head joins the narrower one.
+  const delivering = eligible.filter(
+    (person) => person.role === 'INSTRUCTOR' || person.cohorts.length > 0,
+  );
+
+  // A HOD may only read instructor profiles — the API answers 404 for any head,
+  // including themselves — so those rows stay plain text rather than dead links.
+  const canOpenProfile = (person) => isAdmin || person.role === 'INSTRUCTOR';
 
   const completedCohorts = cohorts.filter((cohort) => cohort.completedAt);
   const inProgressCohorts = cohorts.filter((cohort) => !cohort.completedAt);
   const shownCohorts = cohortView === 'completed' ? completedCohorts : inProgressCohorts;
 
   const stats = [
-    ['Instructors', instructors.length],
+    ['Instructors', delivering.length],
     ['Cohorts in progress', inProgressCohorts.length],
     ['Completed cohorts', completedCohorts.length],
     ['Curriculum topics', curriculum.length],
@@ -368,7 +386,7 @@ export default function DepartmentDetail() {
                               size="sm"
                               variant="secondary"
                               onClick={() => openAssign(cohort)}
-                              disabled={instructors.length === 0}
+                              disabled={eligible.length === 0}
                             >
                               {hasInstructor ? 'Reassign' : 'Assign'}
                             </Button>
@@ -381,24 +399,25 @@ export default function DepartmentDetail() {
               </Table>
             )}
 
-            {instructors.length === 0 && cohorts.length > 0 && (
+            {eligible.length === 0 && cohorts.length > 0 && (
               <div className="border-t border-line px-5 py-4">
                 <Alert tone="warning">
-                  Add an instructor to this department before cohorts can be assigned.
+                  Add an instructor to this department before cohorts can be assigned. A head of
+                  this department can also take a cohort on.
                 </Alert>
               </div>
             )}
           </Panel>
 
           <Panel
-            title="Instructor delivery"
-            description="Average curriculum coverage across each instructor's active cohorts."
+            title="Delivery"
+            description="Average curriculum coverage across the active cohorts each person is delivering here."
           >
-            {instructors.length === 0 ? (
+            {delivering.length === 0 ? (
               <EmptyState
                 icon={Users}
-                title="No active instructors"
-                description="Assign instructors to this department from the Staff page."
+                title="Nobody is delivering yet"
+                description="Add an instructor to this department from the Staff page, or assign a cohort to one of its heads."
                 action={
                   <Button variant="secondary" to="/admin/staff">
                     Go to staff
@@ -416,7 +435,7 @@ export default function DepartmentDetail() {
                   </TR>
                 </THead>
                 <TBody>
-                  {instructors.map((instructor) => {
+                  {delivering.map((instructor) => {
                     const average = averageProgress(instructor.cohorts);
                     const students = instructor.cohorts.reduce(
                       (total, cohort) => total + cohort._count.enrollments,
@@ -426,7 +445,23 @@ export default function DepartmentDetail() {
                     return (
                       <TR key={instructor.id} className="hover:bg-surface-raised">
                         <TD>
-                          <p className="font-medium text-ink">{instructor.name}</p>
+                          <p className="flex items-center gap-2 font-medium text-ink">
+                            {canOpenProfile(instructor) ? (
+                              <Link
+                                to={`/admin/staff/${instructor.id}`}
+                                className="rounded transition-colors hover:text-brand-700"
+                              >
+                                {instructor.name}
+                              </Link>
+                            ) : (
+                              instructor.name
+                            )}
+                            {instructor.role === 'HOD' && (
+                              <Badge tone="brand" icon={ShieldCheck}>
+                                Head
+                              </Badge>
+                            )}
+                          </p>
                           <p className="text-xs text-ink-subtle">@{instructor.username}</p>
                         </TD>
                         <TD align="right" className="text-ink-muted">
@@ -630,14 +665,18 @@ export default function DepartmentDetail() {
           <Field
             as="select"
             label="Instructor"
+            hint="A head of this department can deliver a cohort themselves."
             value={selectedInstructorId}
             onChange={(event) => setSelectedInstructorId(event.target.value)}
             required
           >
             <option value="">Select an instructor</option>
-            {instructors.map((instructor) => (
-              <option key={instructor.id} value={instructor.id}>
-                {instructor.name} · {instructor.cohorts.length} cohorts
+            {eligible.map((person) => (
+              <option key={person.id} value={person.id}>
+                {person.name}
+                {person.id === user?.id ? ' (you)' : ''}
+                {person.role === 'HOD' ? ' · Head of Department' : ''} ·{' '}
+                {person.cohorts.length} cohorts
               </option>
             ))}
           </Field>

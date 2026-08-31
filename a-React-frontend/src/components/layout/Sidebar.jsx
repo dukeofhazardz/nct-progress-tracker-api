@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Flag, LayoutDashboard, LogOut, Users, X } from 'lucide-react';
+import { Flag, GraduationCap, LayoutDashboard, LogOut, Users, X } from 'lucide-react';
 import { useAuth } from '../../context/authContext';
-import initials from '../../utils/initials';
+import Avatar from '../ui/Avatar';
 import Brand from './Brand';
 
 /**
@@ -33,7 +33,22 @@ const managementMenu = [
   },
 ];
 
-const menus = { ADMIN: managementMenu, HOD: managementMenu };
+const menus = {
+  ADMIN: managementMenu,
+  // A head of department can also hold cohorts and record progress against them,
+  // using the same workspace an instructor uses. It is a second hat rather than
+  // the main one, so it sits below the management pages and `homePathFor('HOD')`
+  // still lands on /admin. An administrator does not deliver, so does not get it.
+  HOD: [
+    ...managementMenu,
+    {
+      name: 'My cohorts',
+      path: '/instructor',
+      icon: GraduationCap,
+      match: (path) => path.startsWith('/instructor'),
+    },
+  ],
+};
 
 const roleLabels = {
   ADMIN: 'Administrator',
@@ -107,9 +122,14 @@ export default function Sidebar({ isOpen, onClose }) {
 
       <div className="shrink-0 border-t border-white/5 p-3">
         <div className="flex items-center gap-2.5 px-1 pb-3">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/10 text-xs font-bold text-white">
-            {initials(user?.name, 'NCT')}
-          </span>
+          <Avatar
+            src={user?.avatarUrl}
+            avatar={user?.avatar}
+            name={user?.name}
+            fallback="NCT"
+            className="h-8 w-8 text-xs"
+            fallbackClassName="bg-white/10 text-white"
+          />
           <div className="min-w-0 leading-tight">
             <p className="truncate text-sm font-medium text-white">{user?.name}</p>
             <p className="truncate text-xs text-white/45">{roleLabels[user?.role]}</p>

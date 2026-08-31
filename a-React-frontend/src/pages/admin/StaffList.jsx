@@ -1,12 +1,13 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Plus, RotateCw, SearchX, ShieldCheck, UserCheck, UserX, Users } from 'lucide-react';
 import { tracker } from '../../api/services/trackerService';
 import { useAuth } from '../../context/authContext';
 import useFetch from '../../hooks/useFetch';
 import useListControls from '../../hooks/useListControls';
-import initials from '../../utils/initials';
 import { formatDate, formatDateTime } from '../../utils/dateFormatter';
 import Alert from '../../components/ui/Alert';
+import Avatar from '../../components/ui/Avatar';
 import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
@@ -359,16 +360,22 @@ export default function StaffList() {
                 {rows.map((person) => (
                   <TR key={person.id} className="hover:bg-surface-raised">
                     <TD>
-                      <div className="flex items-center gap-3">
-                        <span
-                          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                      {/* The whole name block links through to the profile — this is
+                          the way in to someone's cohorts, current and completed. */}
+                      <Link
+                        to={`/admin/staff/${person.id}`}
+                        className="flex items-center gap-3 rounded transition-colors hover:text-brand-700"
+                      >
+                        <Avatar
+                          src={person.avatarUrl}
+                          name={person.name}
+                          className="h-9 w-9 text-xs"
+                          fallbackClassName={
                             person.isActive
                               ? 'bg-brand-100 text-brand-800'
                               : 'bg-surface-sunken text-ink-faint'
-                          }`}
-                        >
-                          {initials(person.name)}
-                        </span>
+                          }
+                        />
                         <div className="min-w-0">
                           <p className="flex items-center gap-2 font-medium">
                             <span className={person.isActive ? 'text-ink' : 'text-ink-subtle'}>
@@ -381,7 +388,7 @@ export default function StaffList() {
                             {person.email ? ` · ${person.email}` : ''}
                           </p>
                         </div>
-                      </div>
+                      </Link>
                     </TD>
                     {isAdmin && (
                       <TD>
@@ -398,13 +405,11 @@ export default function StaffList() {
                       {departmentNames(person) ?? <span className="text-ink-faint">Unassigned</span>}
                     </TD>
                     <TD align="right">
-                      {person.role === 'HOD' ? (
-                        <span className="text-ink-faint">—</span>
-                      ) : (
-                        <Badge tone={person.activeCohorts > 0 ? 'brand' : 'neutral'}>
-                          {person.activeCohorts}
-                        </Badge>
-                      )}
+                      {/* A head of department can hold cohorts of their own now, so
+                          this is a real number for both roles. */}
+                      <Badge tone={person.activeCohorts > 0 ? 'brand' : 'neutral'}>
+                        {person.activeCohorts}
+                      </Badge>
                     </TD>
                     <TD>
                       <span
@@ -571,10 +576,10 @@ export default function StaffList() {
         {pendingAction?.person && (
           <>
             <strong className="font-semibold text-ink">{pendingAction.person.name}</strong> will no
-            longer be able to sign in
-            {pendingAction.person.role === 'HOD'
-              ? '. The departments they head are unaffected.'
-              : `, and their ${cohortsLabel(pendingAction.person.activeCohorts)} will become unassigned.`}{' '}
+            longer be able to sign in, and their{' '}
+            {cohortsLabel(pendingAction.person.activeCohorts)} will become unassigned.
+            {pendingAction.person.role === 'HOD' &&
+              ' The departments they head are unaffected.'}{' '}
             Recorded progress and student disputes are preserved, and you can reactivate the account
             at any time.
           </>
@@ -594,9 +599,9 @@ export default function StaffList() {
           <>
             <strong className="font-semibold text-ink">{pendingAction.person.name}</strong> will be
             able to sign in again with their existing password
-            {pendingAction.person.role === 'HOD'
-              ? ' and resume managing their departments.'
-              : '. Cohorts unassigned when they were deactivated stay unassigned — reassign those from the department page.'}
+            {pendingAction.person.role === 'HOD' && ' and resume managing their departments'}.
+            Cohorts unassigned when they were deactivated stay unassigned — reassign those from the
+            department page.
           </>
         )}
       </ConfirmDialog>
