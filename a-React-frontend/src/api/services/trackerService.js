@@ -18,6 +18,10 @@ export const tracker = {
   // Instructors and heads of department share one set of endpoints — the two are
   // created, deactivated and reactivated identically.
   staff: () => api.get('/staff').then((response) => response.data),
+  // One staff member as a person — the same shape `/me` answers, so the profile
+  // page renders identically whether you are reading yourself or someone else.
+  // 404 rather than 403 when they are outside the caller's scope.
+  staffMember: (id) => api.get(`/staff/${id}`).then((response) => response.data),
   addStaff: (data) => api.post('/staff', data).then((response) => response.data),
   // Soft delete: the account is deactivated, never destroyed, so it can be restored.
   deactivateStaff: (id) => api.delete(`/staff/${id}`),
@@ -29,7 +33,11 @@ export const tracker = {
   disputes: () => api.get('/disputes').then((response) => response.data),
   resolve: (id) => api.patch(`/disputes/${id}/resolve`).then((response) => response.data),
   cohorts: () => api.get('/instructor/cohorts').then((response) => response.data),
-  createCohort: (name) => api.post('/instructor/cohorts', { name }).then((response) => response.data),
+  // `departmentId` is only needed by a head of department who heads more than one;
+  // an instructor has exactly one, and the server fills it in. Omitted keys are
+  // dropped from the JSON body, so passing nothing keeps the old behaviour.
+  createCohort: (name, departmentId) =>
+    api.post('/instructor/cohorts', { name, departmentId }).then((response) => response.data),
   enrollStudent: (cohortId, username) =>
     api.post(`/instructor/cohorts/${cohortId}/students`, { username }),
   setProgress: (cohortId, itemId, completed) =>

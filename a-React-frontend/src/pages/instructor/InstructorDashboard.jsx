@@ -12,6 +12,7 @@ import {
   UserPlus,
 } from 'lucide-react';
 import { tracker } from '../../api/services/trackerService';
+import { useAuth } from '../../context/authContext';
 import useFetch from '../../hooks/useFetch';
 import initials from '../../utils/initials';
 import { formatDate } from '../../utils/dateFormatter';
@@ -51,14 +52,22 @@ const applyToggle = (cohorts, cohortId, itemId, isCompleted) =>
   });
 
 export default function InstructorDashboard() {
+  const { user } = useAuth();
   const { data, status, error, reload, setData } = useFetch(() => tracker.cohorts(), []);
   // Memoised because the roster effect depends on it — a fresh [] each render
   // would re-run that effect forever.
   const cohorts = useMemo(() => data ?? [], [data]);
 
+  // An instructor has exactly one department; a head of department can head
+  // several, and any of them can hold a cohort they deliver themselves. The login
+  // payload already carries this for both roles, so no extra request.
+  const myDepartments = user?.departments ?? [];
+  const mustPickDepartment = myDepartments.length > 1;
+
   const [expandedIds, setExpandedIds] = useState(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [cohortName, setCohortName] = useState('');
+  const [cohortDepartmentId, setCohortDepartmentId] = useState('');
   const [createError, setCreateError] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [studentLogins, setStudentLogins] = useState({});
@@ -116,11 +125,18 @@ export default function InstructorDashboard() {
       return;
     }
 
+    // The server refuses to guess for a head who heads more than one department.
+    const departmentId = mustPickDepartment ? cohortDepartmentId : myDepartments[0]?.id;
+    if (mustPickDepartment && !departmentId) {
+      setCreateError('Choose which department this cohort belongs to.');
+      return;
+    }
+
     setIsCreating(true);
     setCreateError('');
 
     try {
-      await tracker.createCohort(name);
+      await tracker.createCohort(name, departmentId);
       await reload({ quiet: true });
       setCohortName('');
       setIsCreateOpen(false);
@@ -227,7 +243,11 @@ export default function InstructorDashboard() {
     <div className="space-y-6">
       <PageHeader
         title="My cohorts"
-        subtitle="Enrol students and record the curriculum topics you have covered."
+        subtitle={
+          user?.role === 'HOD'
+            ? 'Cohorts you are delivering yourself, alongside the departments you head.'
+            : 'Enrol students and record the curriculum topics you have covered.'
+        }
         actions={
           <Button icon={Plus} onClick={() => setIsCreateOpen(true)}>
             Create cohort
@@ -609,7 +629,7 @@ export default function InstructorDashboard() {
           setCreateError('');
         }}
         title="Create cohort"
-        description="Cohort names must be unique within your department."
+        description="Cohort names must be unique within their department."
         footer={
           <>
             <Button
@@ -634,6 +654,25 @@ export default function InstructorDashboard() {
             placeholder="e.g. Cohort 7 — August intake"
             required
           />
+          {/* Only asked of a head who heads more than one department — everyone
+              else has exactly one, and the server fills it in. */}
+          {mustPickDepartment && (
+            <Field
+              as="select"
+              label="Department"
+              hint="The cohort follows this department's published curriculum."
+              value={cohortDepartmentId}
+              onChange={(event) => setCohortDepartmentId(event.target.value)}
+              required
+            >
+              <option value="">Select a department</option>
+              {myDepartments.map((department) => (
+                <option key={department.id} value={department.id}>
+                  {department.name}
+                </option>
+              ))}
+            </Field>
+          )}
         </form>
       </Modal>
     </div>

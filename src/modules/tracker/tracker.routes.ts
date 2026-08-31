@@ -3,6 +3,8 @@ import bcrypt from "bcrypt";
 import { prisma } from "../../lib/prisma";
 import { allow, AuthRequest, protect } from "../../shared/middleware/auth.middleware";
 import { asyncHandler } from "../../shared/async-handler";
+import { percent } from "../../shared/progress";
+import { avatarUrlOf, profileOf, STAFF_FIELDS, staffDepartments } from "../../shared/profile";
 import { DisputeStatus, Role } from "../../generated/prisma/enums";
 
 const router = Router();
@@ -14,8 +16,6 @@ router.get("/public/departments", asyncHandler(async (_req, res) => {
 }));
 
 router.use(protect);
-
-const percent = (done: number, total: number) => total ? Math.round(done / total * 100) : 0;
 
 const MANAGERS = [Role.ADMIN, Role.HOD] as const;
 
@@ -33,6 +33,23 @@ const scopeOf = async (user: { id: string; role: Role }) =>
 
 const inScope = (scope: string[] | null, departmentId: string | null) =>
   !scope || (departmentId !== null && scope.includes(departmentId));
+
+/**
+ * Who may deliver a cohort in a department: its instructors, plus the heads who
+ * head it — heading a department and teaching in it are not exclusive, and
+ * `Cohort.instructor` has never carried a role constraint.
+ *
+ * An instructor's department is `User.departmentId` while a HOD's are
+ * `DepartmentMember` rows, so the two cannot come from one relation query — which
+ * is why `Department.users` alone is no longer the answer to this question.
+ */
+const canDeliverIn = (departmentId: string) => ({
+  isActive: true,
+  OR: [
+    { role: Role.INSTRUCTOR, departmentId },
+    { role: Role.HOD, memberOf: { some: { departmentId } } }
+  ]
+});
 
 /**
  * A department's *current* curriculum is simply its highest version — spread this
@@ -62,23 +79,59 @@ const topicsFor = (
 
 router.get("/departments", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
   const scope = await scopeOf(req.user!);
-  const rows = await prisma.department.findMany({
-    where: scope ? { id: { in: scope } } : {},
-    // Counts only — this list never renders topic titles or progress rows.
-    include: {
-      users: { where: { role: Role.INSTRUCTOR, isActive: true }, include: { _count: { select: { cohorts: { where: { isActive: true } } } } } },
-      curriculumVersions: { orderBy: { version: "desc" }, take: 1, select: { _count: { select: { items: true } } } },
-      cohorts: { select: { completedAt: true, _count: { select: { progress: true } }, curriculumVersion: { select: { _count: { select: { items: true } } } } } }
-    },
-    orderBy: { name: "asc" }
-  });
+  const [rows, deliverers] = await Promise.all([
+    prisma.department.findMany({
+      where: scope ? { id: { in: scope } } : {},
+      // Counts only — this list never renders topic titles or progress rows.
+      include: {
+        curriculumVersions: { orderBy: { version: "desc" }, take: 1, select: { _count: { select: { items: true } } } },
+        cohorts: { select: { completedAt: true, _count: { select: { progress: true } }, curriculumVersion: { select: { _count: { select: { items: true } } } } } }
+      },
+      orderBy: { name: "asc" }
+    }),
+    // Everyone who could be delivering in any in-scope department, fetched once
+    // and grouped below. A HOD's departments are memberships, so this cannot be a
+    // nested `users` include on the department.
+    prisma.user.findMany({
+      where: {
+        isActive: true,
+        OR: [
+          { role: Role.INSTRUCTOR, departmentId: scope ? { in: scope } : { not: null } },
+          { role: Role.HOD, memberOf: { some: scope ? { departmentId: { in: scope } } : {} } }
+        ]
+      },
+      select: {
+        id: true,
+        name: true,
+        role: true,
+        departmentId: true,
+        memberOf: { select: { departmentId: true } },
+        cohorts: { where: { isActive: true }, select: { departmentId: true } }
+      },
+      orderBy: { name: "asc" }
+    })
+  ]);
+
+  /**
+   * The people counted as this department's instructors: everyone posted to it,
+   * plus any head who is actually delivering here. A head who merely heads the
+   * department is left out on purpose, so "3 instructors" keeps meaning "3 people
+   * delivering" rather than counting managers twice.
+   */
+  const instructorsOf = (departmentId: string) => deliverers
+    .filter(u => u.role === Role.INSTRUCTOR
+      ? u.departmentId === departmentId
+      : u.cohorts.some(c => c.departmentId === departmentId))
+    .map(u => ({ id: u.id, name: u.name, role: u.role, activeCohorts: u.cohorts.filter(c => c.departmentId === departmentId).length }));
+
   res.json(rows.map(d => {
     const topicCount = d.curriculumVersions[0]?._count.items ?? 0;
     // Cohorts pinned to different versions have different totals, so the
     // denominator is the sum of each cohort's own list length rather than
     // cohorts × current topics.
     const trackable = d.cohorts.reduce((n, c) => n + (c.curriculumVersion?._count.items ?? topicCount), 0);
-    return { id: d.id, name: d.name, instructorCount: d.users.length, cohortCount: d.cohorts.length, completedCohortCount: d.cohorts.filter(c => c.completedAt).length, topicCount, progress: percent(d.cohorts.reduce((n, c) => n + c._count.progress, 0), trackable), instructors: d.users.map(i => ({ id: i.id, name: i.name, activeCohorts: i._count.cohorts })) };
+    const instructors = instructorsOf(d.id);
+    return { id: d.id, name: d.name, instructorCount: instructors.length, cohortCount: d.cohorts.length, completedCohortCount: d.cohorts.filter(c => c.completedAt).length, topicCount, progress: percent(d.cohorts.reduce((n, c) => n + c._count.progress, 0), trackable), instructors };
   }));
 }));
 
@@ -97,10 +150,23 @@ router.get("/departments/:id", allow(...MANAGERS), asyncHandler(async (req: Auth
   const scope = await scopeOf(req.user!);
   if (!inScope(scope, departmentId)) return res.status(404).json({ message: "Department not found" });
 
-  const department = await prisma.department.findUnique({ where: { id: departmentId }, include: { curriculumVersions: CURRENT_VERSION, cohorts: { where: { isActive: true }, include: { progress: true, curriculumVersion: { select: { version: true, _count: { select: { items: true } } } }, instructor: { select: { id: true, name: true, isActive: true } }, _count: { select: { enrollments: true } } }, orderBy: { createdAt: "desc" } }, users: { where: { role: Role.INSTRUCTOR, isActive: true }, include: { cohorts: { where: { isActive: true }, include: { progress: true, curriculumVersion: { select: { version: true, _count: { select: { items: true } } } }, _count: { select: { enrollments: true } } } } } } } });
+  const [department, deliverers] = await Promise.all([
+    prisma.department.findUnique({ where: { id: departmentId }, include: { curriculumVersions: CURRENT_VERSION, cohorts: { where: { isActive: true }, include: { progress: true, curriculumVersion: { select: { version: true, _count: { select: { items: true } } } }, instructor: { select: { id: true, name: true, isActive: true } }, _count: { select: { enrollments: true } } }, orderBy: { createdAt: "desc" } } } }),
+    // Instructors posted here plus the heads who head it — see `canDeliverIn`.
+    // The cohorts are narrowed to *this* department: a head delivering in two must
+    // not have the other one's cohorts counted into this page's delivery table.
+    prisma.user.findMany({
+      where: canDeliverIn(departmentId),
+      select: {
+        ...STAFF_FIELDS,
+        cohorts: { where: { isActive: true, departmentId }, include: { progress: true, curriculumVersion: { select: { version: true, _count: { select: { items: true } } } }, _count: { select: { enrollments: true } } } }
+      },
+      orderBy: { name: "asc" }
+    })
+  ]);
   if (!department) return res.status(404).json({ message: "Department not found" });
 
-  const { curriculumVersions, cohorts, users, ...rest } = department;
+  const { curriculumVersions, cohorts, ...rest } = department;
   const current = curriculumVersions[0] ?? null;
 
   /**
@@ -115,7 +181,9 @@ router.get("/departments/:id", allow(...MANAGERS), asyncHandler(async (req: Auth
 
   // `curriculum` stays the current version's topics under its original key — it is
   // what the editor loads — with the version alongside it for the page header.
-  res.json({ ...rest, curriculum: current?.items ?? [], curriculumVersion: current && { version: current.version, publishedAt: current.publishedAt }, cohorts: cohorts.map(shape), users: users.map(i => ({ ...i, password: undefined, cohorts: i.cohorts.map(shape) })) });
+  // `users` keeps its key too, but each entry now carries `role`: the client needs
+  // to tell an instructor from a head who also teaches.
+  res.json({ ...rest, curriculum: current?.items ?? [], curriculumVersion: current && { version: current.version, publishedAt: current.publishedAt }, cohorts: cohorts.map(shape), users: deliverers.map(i => ({ ...i, cohorts: i.cohorts.map(shape) })) });
 }));
 
 /**
@@ -176,16 +244,9 @@ router.put("/departments/:id/curriculum", allow(...MANAGERS), asyncHandler(async
 /**
  * Staff accounts — instructors and heads of department. Both are created,
  * deactivated and reactivated identically, so they share one set of routes.
- *
- * An instructor's department is `User.departmentId` (cohort creation depends on
- * it); a HOD's departments are `DepartmentMember` rows. Every response
- * normalises both into a `departments` array so the client renders one shape.
+ * `staffDepartments` and `STAFF_FIELDS` live in `shared/profile` because the
+ * profile endpoints answer with the same shape.
  */
-const staffDepartments = (user: { role: Role; department: { id: string; name: string } | null; memberOf: { department: { id: string; name: string } }[] }) =>
-  user.role === Role.HOD
-    ? user.memberOf.map(m => m.department)
-    : user.department ? [user.department] : [];
-
 router.get("/staff", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
   const scope = await scopeOf(req.user!);
   // Deactivated accounts are included so they can be reviewed and reactivated;
@@ -193,10 +254,19 @@ router.get("/staff", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, r
   // departments — head-of-department accounts are the administrator's to manage.
   const users = await prisma.user.findMany({
     where: scope ? { role: Role.INSTRUCTOR, departmentId: { in: scope } } : { role: { in: [Role.INSTRUCTOR, Role.HOD] } },
-    include: { department: { select: { id: true, name: true } }, memberOf: { include: { department: { select: { id: true, name: true } } } }, _count: { select: { cohorts: { where: { isActive: true } } } } },
+    // An explicit projection, and the picture opted into: what travels is one short
+    // URL per person, which the browser then fetches from the bucket in parallel and
+    // caches. The image bytes never enter this payload.
+    select: {
+      ...STAFF_FIELDS,
+      avatarPath: true,
+      department: { select: { id: true, name: true } },
+      memberOf: { select: { department: { select: { id: true, name: true } } } },
+      _count: { select: { cohorts: { where: { isActive: true } } } }
+    },
     orderBy: { name: "asc" }
   });
-  res.json(users.map(({ password, memberOf, ...u }) => ({ ...u, activeCohorts: u._count.cohorts, departments: staffDepartments({ ...u, memberOf }) })));
+  res.json(users.map(({ memberOf, avatarPath, ...u }) => ({ ...u, avatarUrl: avatarUrlOf(avatarPath), activeCohorts: u._count.cohorts, departments: staffDepartments({ ...u, memberOf }) })));
 }));
 
 router.post("/staff", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
@@ -229,8 +299,8 @@ router.post("/staff", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, 
   const fields = { name: name.trim(), email: email?.trim() || null, password: hashedPassword, departmentId: role === Role.INSTRUCTOR ? departmentIds[0] : null };
 
   const user = existing
-    ? await prisma.user.update({ where: { id: existing.id }, data: { ...fields, username: normalizedUsername, isActive: true } })
-    : await prisma.user.create({ data: { ...fields, username: normalizedUsername, role } });
+    ? await prisma.user.update({ where: { id: existing.id }, data: { ...fields, username: normalizedUsername, isActive: true }, select: { ...STAFF_FIELDS } })
+    : await prisma.user.create({ data: { ...fields, username: normalizedUsername, role }, select: { ...STAFF_FIELDS } });
 
   // Memberships drive scoping, so they are brought exactly into line with the
   // submitted set on both create and reactivate.
@@ -239,7 +309,7 @@ router.post("/staff", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, 
     ...departmentIds.map(departmentId => prisma.departmentMember.upsert({ where: { userId_departmentId: { userId: user.id, departmentId } }, create: { userId: user.id, departmentId }, update: {} }))
   ]);
 
-  res.status(201).json({ ...user, password: undefined });
+  res.status(201).json(user);
 }));
 
 /** Shared authorisation for acting on one staff account. */
@@ -273,8 +343,23 @@ router.patch("/staff/:id/reactivate", allow(...MANAGERS), asyncHandler(async (re
   // Their existing password and departments are untouched, so they can sign in
   // immediately. Cohorts unassigned at deactivation stay unassigned — an admin
   // or HOD reassigns those deliberately from the department page.
-  const user = await prisma.user.update({ where: { id: target.id }, data: { isActive: true } });
-  res.json({ ...user, password: undefined });
+  res.json(await prisma.user.update({ where: { id: target.id }, data: { isActive: true }, select: { ...STAFF_FIELDS } }));
+}));
+
+/**
+ * One staff member's profile, for a manager. Read-only: nobody resets anyone
+ * else's password here — a forgotten one is handled by deactivating and re-adding
+ * the username, which reuses the row above.
+ *
+ * `findManageableStaff` already encodes who may look: an administrator at anyone,
+ * a HOD only at instructors in their own departments, 404 otherwise. `{}` rather
+ * than `{ isActive: true }` so a deactivated account can still be reviewed.
+ */
+router.get("/staff/:id", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
+  const target = await findManageableStaff(req, {});
+  if (!target) return res.status(404).json({ message: "Account not found" });
+
+  res.json(await profileOf(target.id));
 }));
 
 router.patch("/cohorts/:id/instructor", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
@@ -284,10 +369,12 @@ router.patch("/cohorts/:id/instructor", allow(...MANAGERS), asyncHandler(async (
   const scope = await scopeOf(req.user!);
   if (!inScope(scope, cohort.departmentId)) return res.status(404).json({ message: "Active cohort not found" });
 
+  // Heads of department are eligible too — see `canDeliverIn`. Because a HOD is
+  // also a manager, this is equally how they take a cohort on themselves.
   const instructor = await prisma.user.findFirst({
-    where: { id: req.body.instructorId, role: Role.INSTRUCTOR, isActive: true, departmentId: cohort.departmentId }
+    where: { id: req.body.instructorId, ...canDeliverIn(cohort.departmentId) }
   });
-  if (!instructor) return res.status(400).json({ message: "Choose an active instructor from this department" });
+  if (!instructor) return res.status(400).json({ message: "Choose an active instructor from this department, or one of its heads" });
 
   const updated = await prisma.cohort.update({
     where: { id: cohort.id },
@@ -317,7 +404,13 @@ router.get("/cohorts/:id/students", allow(Role.ADMIN, Role.HOD, Role.INSTRUCTOR)
   res.json(enrollments.map(e => ({ ...e.student, enrolledAt: e.createdAt })));
 }));
 
-router.get("/instructor/cohorts", allow(Role.INSTRUCTOR), asyncHandler(async (req: AuthRequest, res) => {
+/**
+ * The delivery workspace. Open to heads of department as well as instructors:
+ * heading a department and teaching in it are not exclusive, and every route below
+ * filters on `instructorId: req.user!.id`, so widening the guard grants a HOD
+ * their own cohorts and nothing more.
+ */
+router.get("/instructor/cohorts", allow(Role.INSTRUCTOR, Role.HOD), asyncHandler(async (req: AuthRequest, res) => {
   const cohorts = await prisma.cohort.findMany({ where: { instructorId: req.user!.id }, include: { department: { include: { curriculumVersions: CURRENT_VERSION } }, curriculumVersion: PINNED_VERSION, progress: true, _count: { select: { enrollments: true } } }, orderBy: { createdAt: "desc" } });
   res.json(cohorts.map(({ department, curriculumVersion, ...c }) => {
     const topics = topicsFor({ curriculumVersion }, department);
@@ -335,15 +428,31 @@ router.get("/instructor/cohorts", allow(Role.INSTRUCTOR), asyncHandler(async (re
   }));
 }));
 
-router.post("/instructor/cohorts", allow(Role.INSTRUCTOR), asyncHandler(async (req: AuthRequest, res) => {
-  const instructor = await prisma.user.findUnique({ where: { id: req.user!.id } });
-  if (!instructor?.isActive) return res.status(403).json({ message: "This instructor account is inactive" });
-  if (!instructor.departmentId) return res.status(400).json({ message: "Instructor has no assigned department" });
+router.post("/instructor/cohorts", allow(Role.INSTRUCTOR, Role.HOD), asyncHandler(async (req: AuthRequest, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.user!.id },
+    select: { id: true, role: true, isActive: true, departmentId: true, memberOf: { select: { departmentId: true } } }
+  });
+  if (!user?.isActive) return res.status(403).json({ message: "This account is inactive" });
+
+  // An instructor delivers in the one department they are posted to; a head can
+  // deliver in any they head, so which one a new cohort belongs to has to be
+  // asked for — unless there is only one it could be.
+  const candidates = user.role === Role.HOD
+    ? user.memberOf.map(m => m.departmentId)
+    : [user.departmentId].filter((id): id is string => !!id);
+  if (!candidates.length) return res.status(400).json({ message: user.role === Role.HOD ? "You do not head any department yet" : "Instructor has no assigned department" });
+
+  const departmentId = req.body.departmentId ? String(req.body.departmentId) : candidates.length === 1 ? candidates[0] : null;
+  if (!departmentId) return res.status(400).json({ message: "Choose which department this cohort belongs to" });
+  // 404, not 403: a head must not be able to use error codes to discover which
+  // other departments exist, the same rule `inScope` follows.
+  if (!candidates.includes(departmentId)) return res.status(404).json({ message: "Department not found" });
 
   const name = req.body.name?.trim();
   if (!name) return res.status(400).json({ message: "Cohort name is required" });
   const existingCohort = await prisma.cohort.findFirst({
-    where: { departmentId: instructor.departmentId, name: { equals: name, mode: "insensitive" } }
+    where: { departmentId, name: { equals: name, mode: "insensitive" } }
   });
   if (existingCohort) {
     return res.status(409).json({
@@ -351,11 +460,11 @@ router.post("/instructor/cohorts", allow(Role.INSTRUCTOR), asyncHandler(async (r
     });
   }
 
-  const cohort = await prisma.cohort.create({ data: { name, departmentId: instructor.departmentId, instructorId: instructor.id } });
+  const cohort = await prisma.cohort.create({ data: { name, departmentId, instructorId: user.id } });
   res.status(201).json(cohort);
 }));
 
-router.post("/instructor/cohorts/:cohortId/students", allow(Role.INSTRUCTOR), asyncHandler(async (req: AuthRequest, res) => {
+router.post("/instructor/cohorts/:cohortId/students", allow(Role.INSTRUCTOR, Role.HOD), asyncHandler(async (req: AuthRequest, res) => {
   const cohort = await prisma.cohort.findFirst({ where: { id: String(req.params.cohortId), instructorId: req.user!.id } });
   if (!cohort) return res.status(404).json({ message: "Cohort not found" });
   const studentLogin = req.body.username?.trim();
@@ -386,7 +495,7 @@ router.post("/instructor/cohorts/:cohortId/students", allow(Role.INSTRUCTOR), as
   res.status(201).json(enrollment);
 }));
 
-router.put("/instructor/cohorts/:cohortId/progress/:itemId", allow(Role.INSTRUCTOR), asyncHandler(async (req: AuthRequest, res) => {
+router.put("/instructor/cohorts/:cohortId/progress/:itemId", allow(Role.INSTRUCTOR, Role.HOD), asyncHandler(async (req: AuthRequest, res) => {
   const cohortId = String(req.params.cohortId);
   const itemId = String(req.params.itemId);
   const cohort = await prisma.cohort.findFirst({ where: { id: cohortId, instructorId: req.user!.id }, include: { department: { include: { curriculumVersions: CURRENT_VERSION } }, curriculumVersion: PINNED_VERSION } });
@@ -419,7 +528,7 @@ router.put("/instructor/cohorts/:cohortId/progress/:itemId", allow(Role.INSTRUCT
  * Mark delivery finished. Whether every topic is covered is re-checked here
  * rather than trusted from the client, which only hides the button.
  */
-router.patch("/instructor/cohorts/:cohortId/complete", allow(Role.INSTRUCTOR), asyncHandler(async (req: AuthRequest, res) => {
+router.patch("/instructor/cohorts/:cohortId/complete", allow(Role.INSTRUCTOR, Role.HOD), asyncHandler(async (req: AuthRequest, res) => {
   const cohort = await prisma.cohort.findFirst({
     where: { id: String(req.params.cohortId), instructorId: req.user!.id },
     include: { department: { include: { curriculumVersions: CURRENT_VERSION } }, curriculumVersion: PINNED_VERSION, progress: { select: { curriculumItemId: true } } }
@@ -439,7 +548,7 @@ router.patch("/instructor/cohorts/:cohortId/complete", allow(Role.INSTRUCTOR), a
   res.json(await prisma.cohort.update({ where: { id: cohort.id }, data: { completedAt: new Date() } }));
 }));
 
-router.patch("/instructor/cohorts/:cohortId/reopen", allow(Role.INSTRUCTOR), asyncHandler(async (req: AuthRequest, res) => {
+router.patch("/instructor/cohorts/:cohortId/reopen", allow(Role.INSTRUCTOR, Role.HOD), asyncHandler(async (req: AuthRequest, res) => {
   const cohort = await prisma.cohort.findFirst({ where: { id: String(req.params.cohortId), instructorId: req.user!.id } });
   if (!cohort) return res.status(404).json({ message: "Cohort not found" });
   if (!cohort.completedAt) return res.status(409).json({ message: "This cohort is not marked completed" });

@@ -19,6 +19,19 @@ export const AuthProvider = ({ children }) => {
     return data.user;
   };
 
+  /**
+   * Merge a change the user just made to their own account into the session.
+   * The top bar and sidebar render from `nct_user`, so a new profile picture has
+   * to land there too or it would only appear after a re-login.
+   */
+  const updateUser = (patch) =>
+    setUser((current) => {
+      if (!current) return current;
+      const next = { ...current, ...patch };
+      localStorage.setItem('nct_user', JSON.stringify(next));
+      return next;
+    });
+
   const logout = () => {
     localStorage.removeItem('nct_token');
     localStorage.removeItem('nct_user');
@@ -26,7 +39,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout }}>
+    <AuthContext.Provider value={{ user, login, logout, updateUser }}>
       {children}
     </AuthContext.Provider>
   );
