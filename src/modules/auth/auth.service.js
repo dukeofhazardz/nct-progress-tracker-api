@@ -1,6 +1,7 @@
 import { prisma } from "../../lib/prisma.js";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
+import { avatarUrlOf } from "../../shared/profile.js";
 import { Role } from "../../generated/prisma/enums.js";
 const conflict = (message) => {
     const error = new Error(message);
@@ -72,9 +73,11 @@ export const login = async ({ username, email, password }) => {
     const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: "1d" });
     // `departments` covers HODs (who head several) and students (who may study in
     // several); `dept` stays for the single-department instructor case the shell
-    // already renders.
+    // already renders. `avatarUrl` rides along so the top bar and sidebar can render
+    // a face straight from the stored session, with no extra request on every page —
+    // the URL only, never the picture, which the browser fetches from the bucket.
     const departments = user.role === Role.INSTRUCTOR
         ? user.department ? [{ id: user.department.id, name: user.department.name }] : []
         : user.memberOf.map(m => m.department);
-    return { token, user: { id: user.id, username: user.username, name: user.name, role: user.role, departmentId: user.departmentId, dept: user.department?.name, departments } };
+    return { token, user: { id: user.id, username: user.username, name: user.name, role: user.role, avatarUrl: avatarUrlOf(user.avatarPath), departmentId: user.departmentId, dept: user.department?.name, departments } };
 };

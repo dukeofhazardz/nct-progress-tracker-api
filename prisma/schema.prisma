@@ -34,6 +34,14 @@ model User {
   name         String
   role         Role
   isActive     Boolean            @default(true)
+  /// Object path inside the public `avatars` bucket — `<userId>/<uuid>.<ext>` — never a
+  /// URL. The URL is derived at read time by `avatarUrlOf`, so moving the bucket or the
+  /// project does not mean rewriting rows.
+  ///
+  /// The picture itself is deliberately not here: a `findMany` with no `select` returns
+  /// every scalar, so an image column would leak into every staff response. Even this
+  /// path is withheld by default — see `STAFF_FIELDS`.
+  avatarPath   String?
   departmentId String?
   department   Department?        @relation(fields: [departmentId], references: [id])
   memberOf     DepartmentMember[]
