@@ -12,9 +12,9 @@ import StaffProfileView from '../../components/profile/StaffProfileView';
 /**
  * A staff member's profile, reached by clicking their name on the staff list.
  *
- * Read-only by design: nobody resets anyone else's password here. A forgotten
- * password is handled by deactivating the account and re-adding the username,
- * which reuses the row and sets a new one.
+ * This page reads; the staff list writes. Editing an account, resetting its
+ * password and deactivating it all live there, on the row, where the list of
+ * everyone is already in front of you — so nothing here needs to be a form.
  *
  * The API answers 404 rather than 403 for an account outside the caller's scope,
  * so a HOD following a stale link sees "not found", not who exists elsewhere.
@@ -28,7 +28,7 @@ export default function StaffProfile() {
       <PageHeader
         breadcrumb={[{ label: 'Staff', to: '/admin/staff' }, { label: data?.name ?? 'Profile' }]}
         title={data?.name ?? 'Staff profile'}
-        subtitle="Deactivate or reactivate this account from the staff list."
+        subtitle="Edit this account, reset its password, or deactivate it from the staff list."
         actions={
           <Button variant="secondary" icon={ArrowLeft} to="/admin/staff">
             Back to staff

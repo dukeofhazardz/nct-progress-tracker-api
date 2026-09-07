@@ -23,6 +23,16 @@ export const tracker = {
   // 404 rather than 403 when they are outside the caller's scope.
   staffMember: (id) => api.get(`/staff/${id}`).then((response) => response.data),
   addStaff: (data) => api.post('/staff', data).then((response) => response.data),
+  // A partial body is a partial update — only the keys sent are written. Moving
+  // someone out of a department they hold active cohorts in answers 409 with those
+  // cohorts listed; like `updateCurriculum`, that is a confirmation to relay rather
+  // than a failure, and `acknowledge` re-submits past it.
+  updateStaff: (id, data, { acknowledge = false } = {}) =>
+    api.patch(`/staff/${id}`, { ...data, acknowledge }).then((response) => response.data),
+  // 204 — nothing to return. It gives the person a way back in but does not sign
+  // out the sessions they already have; tokens are stateless and last a day.
+  resetStaffPassword: (id, newPassword) =>
+    api.patch(`/staff/${id}/password`, { newPassword }),
   // Soft delete: the account is deactivated, never destroyed, so it can be restored.
   deactivateStaff: (id) => api.delete(`/staff/${id}`),
   reactivateStaff: (id) => api.patch(`/staff/${id}/reactivate`).then((response) => response.data),

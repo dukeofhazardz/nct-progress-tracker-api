@@ -5,7 +5,7 @@ import { prisma } from "../../lib/prisma.js";
 import { deleteObject, putObject } from "../../lib/supabase.js";
 import { protect } from "../../shared/middleware/auth.middleware.js";
 import { asyncHandler } from "../../shared/async-handler.js";
-import { avatarUrlOf, profileOf, readAvatarUpload } from "../../shared/profile.js";
+import { avatarUrlOf, MIN_PASSWORD, profileOf, readAvatarUpload } from "../../shared/profile.js";
 /**
  * A signed-in account acting on itself: reading its own profile, changing its own
  * password, setting its own picture.
@@ -16,8 +16,6 @@ import { avatarUrlOf, profileOf, readAvatarUpload } from "../../shared/profile.j
  */
 const router = Router();
 router.use(protect);
-/** Shortest new password accepted. `register` predates this and enforces none. */
-const MIN_PASSWORD = 8;
 router.get("/", asyncHandler(async (req, res) => {
     const profile = await profileOf(req.user.id);
     if (!profile)

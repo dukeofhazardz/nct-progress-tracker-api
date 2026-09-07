@@ -4,7 +4,7 @@ import { prisma } from "../../lib/prisma";
 import { allow, AuthRequest, protect } from "../../shared/middleware/auth.middleware";
 import { asyncHandler } from "../../shared/async-handler";
 import { percent } from "../../shared/progress";
-import { avatarUrlOf, profileOf, STAFF_FIELDS, staffDepartments } from "../../shared/profile";
+import { avatarUrlOf, MIN_PASSWORD, profileOf, STAFF_FIELDS, staffDepartments } from "../../shared/profile";
 import { DisputeStatus, Role } from "../../generated/prisma/enums";
 
 const router = Router();
@@ -50,6 +50,33 @@ const canDeliverIn = (departmentId: string) => ({
     { role: Role.HOD, memberOf: { some: { departmentId } } }
   ]
 });
+
+/** A status and message for the error handler in `app.ts` to render as JSON. */
+const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
+
+/**
+ * The departments a staff account will belong to, validated.
+ *
+ * A HOD submits a set (`departmentIds`) because heading several is normal; an
+ * instructor submits one (`departmentId`) because `User.departmentId` is singular
+ * and cohort creation reads it.
+ *
+ * Throws rather than answering directly so that creating an account and editing one
+ * share it verbatim — `app.ts` maps `err.status`, the idiom `shared/profile.ts`
+ * already uses for its upload checks. Out of scope is 404 and never 403, so a HOD
+ * cannot use error codes to discover which other departments exist.
+ */
+const readDepartmentIds = async (body: any, role: Role, scope: string[] | null): Promise<string[]> => {
+  const departmentIds: string[] = role === Role.HOD
+    ? [...new Set<string>((body.departmentIds || []).filter(Boolean))]
+    : [body.departmentId].filter(Boolean);
+
+  if (!departmentIds.length) throw fail(400, role === Role.HOD ? "Select at least one department" : "Department is required");
+  if (scope && departmentIds.some(id => !inScope(scope, id))) throw fail(404, "Department not found");
+  if (await prisma.department.count({ where: { id: { in: departmentIds } } }) !== departmentIds.length) throw fail(400, "One or more of those departments do not exist");
+
+  return departmentIds;
+};
 
 /**
  * A department's *current* curriculum is simply its highest version — spread this
@@ -277,13 +304,7 @@ router.post("/staff", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, 
   const scope = await scopeOf(req.user!);
   if (scope && role !== Role.INSTRUCTOR) return res.status(403).json({ message: "Only an administrator can create head-of-department accounts" });
 
-  const departmentIds: string[] = role === Role.HOD
-    ? [...new Set<string>((req.body.departmentIds || []).filter(Boolean))]
-    : [req.body.departmentId].filter(Boolean);
-
-  if (!departmentIds.length) return res.status(400).json({ message: role === Role.HOD ? "Select at least one department" : "Department is required" });
-  if (scope && departmentIds.some(id => !inScope(scope, id))) return res.status(404).json({ message: "Department not found" });
-  if (await prisma.department.count({ where: { id: { in: departmentIds } } }) !== departmentIds.length) return res.status(400).json({ message: "One or more of those departments do not exist" });
+  const departmentIds = await readDepartmentIds(req.body, role, scope);
 
   const normalizedUsername = username.trim().toLowerCase();
   // Must be case-insensitive: legacy rows can hold mixed-case usernames, and a
@@ -323,6 +344,169 @@ const findManageableStaff = async (req: AuthRequest, where: { isActive?: boolean
   return target;
 };
 
+/**
+ * Edit a staff account: name, email, username, role and departments.
+ *
+ * This is the direct version of something that was already possible the long way
+ * round — deactivate the account, re-add its username, and `POST /staff` writes the
+ * submitted fields onto the row it reuses. That route trip unassigns every cohort
+ * the person holds, resets their password whether or not you wanted it, and cannot
+ * change a role at all, since re-adding a username whose row holds a different role
+ * is refused. Here only the cohorts that must be unassigned are, and a role can move.
+ *
+ * A partial body is a partial update: only keys that are present are written.
+ *
+ * ⚠️ A role change is not enforced until the person's next sign-in. `protect` reads
+ * `role` from the JWT and tokens live a day, so a demoted head of department keeps
+ * reaching manager routes until theirs lapses — though `scopeOf` re-reads memberships
+ * from the database, so the departments they can act on narrow immediately. The same
+ * is already true of deactivation, which no middleware checks either. Closing both
+ * means having `protect` resolve the user from the database; until then the client
+ * warns the administrator instead.
+ */
+router.patch("/staff/:id", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
+  // `{}` rather than `{ isActive: true }`, so a deactivated account can be put right
+  // before it is restored — the same reason `GET /staff/:id` reads either.
+  const target = await findManageableStaff(req, {});
+  if (!target) return res.status(404).json({ message: "Account not found" });
+
+  const scope = await scopeOf(req.user!);
+
+  // Rejected rather than coerced. `POST /staff` folds anything that is not HOD into
+  // INSTRUCTOR, which is harmless when creating an account, but here a typo in the
+  // body would silently demote a head of department.
+  if (req.body.role !== undefined && req.body.role !== Role.HOD && req.body.role !== Role.INSTRUCTOR) {
+    return res.status(400).json({ message: "A staff account is either an instructor or a head of department" });
+  }
+  const nextRole: Role = req.body.role ?? target.role;
+
+  // The rule `POST /staff` already applies to creating one: a HOD promoting their own
+  // instructor would be minting a peer they have no authority over, and demoting a
+  // head of department is not theirs to do either.
+  if (nextRole !== target.role && scope) return res.status(403).json({ message: "Only an administrator can change a staff member's role" });
+
+  const data: { name?: string; email?: string | null; username?: string } = {};
+
+  if (req.body.name !== undefined) {
+    if (!req.body.name?.trim()) return res.status(400).json({ message: "Name is required" });
+    data.name = req.body.name.trim();
+  }
+
+  if (req.body.email !== undefined) {
+    const email = req.body.email?.trim() || null;
+    // Checked rather than left to the unique constraint: `app.ts` renders P2002 as a
+    // 409 that names no column, which is unreadable when two fields are editable.
+    if (email && await prisma.user.findFirst({ where: { id: { not: target.id }, email: { equals: email, mode: "insensitive" } }, select: { id: true } })) {
+      return res.status(409).json({ message: "That email is already in use" });
+    }
+    data.email = email;
+  }
+
+  if (req.body.username !== undefined) {
+    const username = String(req.body.username).trim().toLowerCase();
+    if (!username) return res.status(400).json({ message: "Username is required" });
+    // Case-insensitive for the reason spelled out in `POST /staff`: legacy rows can
+    // hold mixed-case usernames, and a case-sensitive check misses the very account
+    // that would shadow this one at login.
+    if (await prisma.user.findFirst({ where: { id: { not: target.id }, username: { equals: username, mode: "insensitive" } }, select: { id: true } })) {
+      return res.status(409).json({ message: "That username is already in use" });
+    }
+    data.username = username;
+  }
+
+  // Departments must be resubmitted when the role changes: the two roles read
+  // different keys, and a HOD's set cannot be reinterpreted as an instructor's single
+  // department. Otherwise an absent key means "leave them alone", derived the same way
+  // `POST /instructor/cohorts` derives its own candidates.
+  const submitted = nextRole === Role.HOD ? req.body.departmentIds !== undefined : req.body.departmentId !== undefined;
+  if (nextRole !== target.role && !submitted) {
+    return res.status(400).json({ message: nextRole === Role.HOD ? "Select the departments they will head" : "Select the one department they will work in" });
+  }
+
+  const departmentIds = submitted
+    ? await readDepartmentIds(req.body, nextRole, scope)
+    : target.role === Role.HOD
+      ? (await prisma.departmentMember.findMany({ where: { userId: target.id }, select: { departmentId: true } })).map(m => m.departmentId)
+      : [target.departmentId].filter((id): id is string => !!id);
+
+  // Only reachable for a row that already had none — an instructor with a null
+  // `departmentId`, which `GET /staff` shows as "Unassigned". Asking for one is far
+  // better than carrying an empty set into the queries below, where `notIn: []`
+  // matches every row and would strip the account bare.
+  if (!departmentIds.length) return res.status(400).json({ message: nextRole === Role.HOD ? "Select at least one department" : "Department is required" });
+
+  // Anything they are delivering outside the resulting set is a cohort they may no
+  // longer deliver — `canDeliverIn` is this same predicate read from the other side.
+  // Promoting an instructor to head the department they already teach in orphans
+  // nothing, which is the common case, because a head who heads a department counts
+  // as able to deliver there.
+  const orphaned = await prisma.cohort.findMany({
+    where: { instructorId: target.id, isActive: true, departmentId: { notIn: departmentIds } },
+    select: { id: true, name: true, department: { select: { name: true } } },
+    orderBy: { name: "asc" }
+  });
+
+  // Refused once with the list, then applied on the second attempt — the exchange
+  // publishing a curriculum already uses. Unassigning is what deactivation does too,
+  // and reassignment stays where it lives, on the department page.
+  if (orphaned.length && req.body.acknowledge !== true) {
+    return res.status(409).json({
+      message: "They can no longer deliver in a department they are leaving, so these cohorts will be left unassigned.",
+      requiresAcknowledgement: true,
+      affectedCohorts: orphaned.map(c => ({ id: c.id, name: c.name, department: c.department.name }))
+    });
+  }
+
+  // One transaction, where `POST /staff` needs two: nothing is being created here, so
+  // the row and its memberships can move together.
+  const [user] = await prisma.$transaction([
+    prisma.user.update({
+      where: { id: target.id },
+      // The expression `POST /staff` uses: an instructor's one department is a column,
+      // a head's are memberships and the column is cleared.
+      data: { ...data, role: nextRole, departmentId: nextRole === Role.INSTRUCTOR ? departmentIds[0] : null },
+      select: { ...STAFF_FIELDS }
+    }),
+    prisma.cohort.updateMany({ where: { id: { in: orphaned.map(c => c.id) } }, data: { instructorId: null } }),
+    prisma.departmentMember.deleteMany({ where: { userId: target.id, departmentId: { notIn: departmentIds } } }),
+    ...departmentIds.map(departmentId => prisma.departmentMember.upsert({ where: { userId_departmentId: { userId: target.id, departmentId } }, create: { userId: target.id, departmentId }, update: {} }))
+  ]);
+
+  res.json(user);
+}));
+
+/**
+ * A manager sets a new password for a staff account.
+ *
+ * A separate route rather than a field on the edit above: one action to one request,
+ * and a password stays out of every routine "fix a typo" save.
+ *
+ * `findManageableStaff` grants a HOD this for their own instructors only, which is no
+ * new power — they could already deactivate the account and re-add the username, and
+ * `POST /staff` sets a password on the row it reuses. This is that, without
+ * unassigning every cohort on the way through.
+ *
+ * ⚠️ It does not sign the person out. Tokens are stateless with a one-day expiry and
+ * there is no revocation list, the limitation `PATCH /me/password` records, so a reset
+ * restores access rather than revoking it. Deactivating is no different.
+ */
+router.patch("/staff/:id/password", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
+  // `{}` again: setting a password before reactivating an account is the useful order.
+  const target = await findManageableStaff(req, {});
+  if (!target) return res.status(404).json({ message: "Account not found" });
+
+  const newPassword = String(req.body.newPassword ?? "");
+  if (!newPassword) return res.status(400).json({ message: "Enter a new password" });
+  if (newPassword.length < MIN_PASSWORD) return res.status(400).json({ message: `The new password must be at least ${MIN_PASSWORD} characters` });
+
+  // No "must differ from their current one" check, unlike `PATCH /me/password`: there
+  // the caller owns the password, whereas here the answer would report back whether a
+  // manager had guessed someone else's.
+  await prisma.user.update({ where: { id: target.id }, data: { password: await bcrypt.hash(newPassword, 10) } });
+
+  res.status(204).send();
+}));
+
 router.delete("/staff/:id", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
   const target = await findManageableStaff(req, { isActive: true });
   if (!target) return res.status(404).json({ message: "Account not found" });
@@ -347,9 +531,8 @@ router.patch("/staff/:id/reactivate", allow(...MANAGERS), asyncHandler(async (re
 }));
 
 /**
- * One staff member's profile, for a manager. Read-only: nobody resets anyone
- * else's password here — a forgotten one is handled by deactivating and re-adding
- * the username, which reuses the row above.
+ * One staff member's profile, for a manager. Read-only: the account itself is edited
+ * through `PATCH /staff/:id`, and its password through `PATCH /staff/:id/password`.
  *
  * `findManageableStaff` already encodes who may look: an administrator at anyone,
  * a HOD only at instructors in their own departments, 404 otherwise. `{}` rather

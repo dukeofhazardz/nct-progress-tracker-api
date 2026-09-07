@@ -131,8 +131,12 @@ export default function Modal({
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">{children}</div>
 
+        {/* Wrapping matters once a footer holds three buttons: `Button` is
+            `whitespace-nowrap`, so on a narrow phone the leftmost one would
+            otherwise be pushed outside the panel and clipped. With room for
+            them all this changes nothing. */}
         {footer && (
-          <div className="flex justify-end gap-2 border-t border-line bg-surface-raised px-5 py-4">
+          <div className="flex flex-wrap justify-end gap-2 border-t border-line bg-surface-raised px-5 py-4">
             {footer}
           </div>
         )}
