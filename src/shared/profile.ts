@@ -29,6 +29,16 @@ export const STAFF_FIELDS = {
 } as const;
 
 /**
+ * Shortest password either route that sets one will accept — `PATCH /me/password`,
+ * where the owner changes their own, and `PATCH /staff/:id/password`, where a
+ * manager resets someone else's. Shared so the two cannot enforce different rules.
+ *
+ * `register` predates both and enforces no minimum at all; that inconsistency is
+ * pre-existing and deliberately left alone here.
+ */
+export const MIN_PASSWORD = 8;
+
+/**
  * Staff accounts — instructors and heads of department. Both are created,
  * deactivated and reactivated identically, so they share one set of routes.
  *

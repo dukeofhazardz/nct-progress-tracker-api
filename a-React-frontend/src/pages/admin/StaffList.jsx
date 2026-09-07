@@ -1,6 +1,16 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, RotateCw, SearchX, ShieldCheck, UserCheck, UserX, Users } from 'lucide-react';
+import {
+  KeyRound,
+  Pencil,
+  Plus,
+  RotateCw,
+  SearchX,
+  ShieldCheck,
+  UserCheck,
+  UserX,
+  Users,
+} from 'lucide-react';
 import { tracker } from '../../api/services/trackerService';
 import { useAuth } from '../../context/authContext';
 import useFetch from '../../hooks/useFetch';
@@ -19,6 +29,7 @@ import Panel from '../../components/ui/Panel';
 import SearchInput from '../../components/ui/SearchInput';
 import SegmentedControl from '../../components/ui/SegmentedControl';
 import Skeleton from '../../components/ui/Skeleton';
+import StaffFormFields from '../../components/staff/StaffFormFields';
 import { Table, TBody, TD, TH, THead, TR } from '../../components/ui/Table';
 
 const emptyForm = {
@@ -30,6 +41,11 @@ const emptyForm = {
   departmentId: '',
   departmentIds: [],
 };
+
+const emptyPasswordForm = { newPassword: '', confirmPassword: '' };
+
+// Matches `MIN_PASSWORD` in the API's shared profile helpers.
+const MIN_PASSWORD = 8;
 
 // Stable reference so useListControls' memo does not recompute on every render.
 const EMPTY = [];
@@ -57,10 +73,19 @@ export default function StaffList() {
   const staff = data?.staff ?? EMPTY;
   const departments = data?.departments ?? EMPTY;
 
-  const [isFormOpen, setIsFormOpen] = useState(false);
+  // One piece of state for the form modal: null closed, 'new' creating, or the
+  // person being edited. The two share every field but the temporary password.
+  const [formTarget, setFormTarget] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [formError, setFormError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const [cohortWarning, setCohortWarning] = useState(null); // { person, cohorts }
+
+  const [passwordTarget, setPasswordTarget] = useState(null);
+  const [passwordForm, setPasswordForm] = useState(emptyPasswordForm);
+  const [passwordError, setPasswordError] = useState('');
+  const [isResetting, setIsResetting] = useState(false);
 
   const [pendingAction, setPendingAction] = useState(null); // { type, person }
   const [isActing, setIsActing] = useState(false);
@@ -89,33 +114,40 @@ export default function StaffList() {
   const activeCount = staff.filter((person) => person.isActive).length;
   const deactivatedCount = staff.length - activeCount;
   const viewingDeactivated = filterValues.status === 'inactive';
-  const isCreatingHod = form.role === 'HOD';
 
-  const updateField = (field) => (event) =>
-    setForm((current) => ({ ...current, [field]: event.target.value }));
+  const editing = formTarget === 'new' ? null : formTarget;
+  const isHodForm = form.role === 'HOD';
 
-  const toggleFormDepartment = (departmentId) =>
-    setForm((current) => ({
-      ...current,
-      departmentIds: current.departmentIds.includes(departmentId)
-        ? current.departmentIds.filter((id) => id !== departmentId)
-        : [...current.departmentIds, departmentId],
-    }));
-
-  const closeForm = () => {
-    setIsFormOpen(false);
+  const openCreate = () => {
+    setFormTarget('new');
     setForm(emptyForm);
     setFormError('');
   };
 
-  const submit = async (event) => {
-    event.preventDefault();
+  const openEdit = (person) => {
+    setFormTarget(person);
+    // Seeded from the row: `GET /staff` normalises both shapes into `departments`,
+    // so neither key needs a fetch — a head's set is all of them, an instructor's
+    // single department is the only one.
+    setForm({
+      role: person.role,
+      name: person.name,
+      username: person.username,
+      email: person.email ?? '',
+      password: '',
+      departmentIds: person.departments?.map((department) => department.id) ?? [],
+      departmentId: person.departments?.[0]?.id ?? '',
+    });
+    setFormError('');
+  };
 
-    if (isCreatingHod && form.departmentIds.length === 0) {
-      setFormError('Select at least one department for a head of department.');
-      return;
-    }
+  const closeForm = () => {
+    setFormTarget(null);
+    setForm(emptyForm);
+    setFormError('');
+  };
 
+  const create = async () => {
     setIsSubmitting(true);
     setFormError('');
 
@@ -126,13 +158,11 @@ export default function StaffList() {
         username: form.username,
         password: form.password,
         email: form.email.trim() || undefined,
-        ...(isCreatingHod
-          ? { departmentIds: form.departmentIds }
-          : { departmentId: form.departmentId }),
+        ...(isHodForm ? { departmentIds: form.departmentIds } : { departmentId: form.departmentId }),
       });
       await reload({ quiet: true });
       setNotice(
-        isCreatingHod
+        isHodForm
           ? `${form.name.trim()} can now sign in and manage ${form.departmentIds.length === 1 ? 'their department' : `${form.departmentIds.length} departments`}.`
           : `${form.name.trim()} can now sign in and create cohorts.`,
       );
@@ -141,6 +171,136 @@ export default function StaffList() {
       setFormError(requestError.response?.data?.message || 'Could not create the account.');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  /**
+   * Every field is sent every time, even untouched ones — the API treats an absent
+   * key as "leave it alone", which suits a partial client but not a whole form.
+   *
+   * `acknowledge` is the second attempt after the API has listed the cohorts this
+   * will unassign, the same exchange publishing a curriculum uses.
+   */
+  const saveEdit = async (person, { acknowledge = false } = {}) => {
+    setIsSubmitting(true);
+    setFormError('');
+
+    try {
+      await tracker.updateStaff(
+        person.id,
+        {
+          role: form.role,
+          name: form.name,
+          username: form.username,
+          // Trimmed to empty rather than omitted, which is how an email is cleared.
+          email: form.email.trim(),
+          ...(isHodForm
+            ? { departmentIds: form.departmentIds }
+            : { departmentId: form.departmentId }),
+        },
+        { acknowledge },
+      );
+      await reload({ quiet: true });
+      setNotice(
+        form.role === person.role
+          ? `${form.name.trim()}'s account has been updated.`
+          : `${form.name.trim()} is now ${form.role === 'HOD' ? 'a head of department' : 'an instructor'}, and keeps their old permissions until they next sign in.`,
+      );
+      setCohortWarning(null);
+      closeForm();
+    } catch (requestError) {
+      const data = requestError.response?.data;
+
+      // Not a failure — the save is being held until the admin has seen the list.
+      if (data?.requiresAcknowledgement) {
+        // The form closes as the dialog opens rather than nesting: Modal traps
+        // focus, and two traps would fight over it. Cancelling puts it back, and
+        // `form` is left alone so nothing typed is lost either way.
+        setFormTarget(null);
+        setCohortWarning({ person, cohorts: data.affectedCohorts });
+        return;
+      }
+
+      const message = data?.message || 'Could not save the changes.';
+      // Confirming happens with the form closed, so its inline Alert would go
+      // unread — that failure belongs on the page, with the row actions' errors.
+      if (acknowledge) {
+        setCohortWarning(null);
+        setActionError(message);
+      } else {
+        setFormError(message);
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const submit = (event) => {
+    event.preventDefault();
+
+    if (isHodForm && form.departmentIds.length === 0) {
+      setFormError('Select at least one department for a head of department.');
+      return;
+    }
+
+    if (editing) saveEdit(editing);
+    else create();
+  };
+
+  const cancelCohortWarning = () => {
+    setFormTarget(cohortWarning?.person ?? null);
+    setCohortWarning(null);
+  };
+
+  const openPasswordReset = () => {
+    // Again one modal at a time. `form` survives, so this is a detour out of the
+    // edit form and back, not a discard.
+    setPasswordTarget(editing);
+    setFormTarget(null);
+    setPasswordForm(emptyPasswordForm);
+    setPasswordError('');
+  };
+
+  const cancelPasswordReset = () => {
+    setFormTarget(passwordTarget);
+    setPasswordTarget(null);
+    setPasswordForm(emptyPasswordForm);
+    setPasswordError('');
+  };
+
+  const submitPasswordReset = async (event) => {
+    event.preventDefault();
+
+    // Checked here as well as by the API so a typo costs no round trip; the
+    // confirmation field is the client's alone — only one password is sent.
+    if (passwordForm.newPassword.length < MIN_PASSWORD) {
+      setPasswordError(`The new password must be at least ${MIN_PASSWORD} characters.`);
+      return;
+    }
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      setPasswordError('The two passwords do not match.');
+      return;
+    }
+
+    setIsResetting(true);
+    setPasswordError('');
+
+    try {
+      await tracker.resetStaffPassword(passwordTarget.id, passwordForm.newPassword);
+      // Only for the Last updated column — nothing else about the row moves.
+      await reload({ quiet: true });
+      setNotice(
+        `${passwordTarget.name}'s password has been changed. Pass it on to them, and ask them to set their own from their profile.`,
+      );
+      setPasswordTarget(null);
+      setPasswordForm(emptyPasswordForm);
+      closeForm();
+    } catch (requestError) {
+      setPasswordError(
+        requestError.response?.data?.message || 'Could not change the password.',
+      );
+    } finally {
+      setIsResetting(false);
     }
   };
 
@@ -208,7 +368,7 @@ export default function StaffList() {
         actions={
           <Button
             icon={Plus}
-            onClick={() => setIsFormOpen(true)}
+            onClick={openCreate}
             disabled={status === 'ready' && departments.length === 0}
           >
             Add account
@@ -262,7 +422,7 @@ export default function StaffList() {
             description="Add an instructor or a head of department to start tracking delivery."
             action={
               departments.length > 0 && (
-                <Button icon={Plus} onClick={() => setIsFormOpen(true)}>
+                <Button icon={Plus} onClick={openCreate}>
                   Add account
                 </Button>
               )
@@ -420,25 +580,37 @@ export default function StaffList() {
                       </span>
                     </TD>
                     <TD align="right">
-                      {person.isActive ? (
-                        <Button
-                          size="sm"
-                          variant="danger-quiet"
-                          icon={UserX}
-                          onClick={() => setPendingAction({ type: 'deactivate', person })}
-                        >
-                          Deactivate
-                        </Button>
-                      ) : (
+                      <div className="flex items-center justify-end gap-2">
+                        {/* Editing works on a deactivated account too — putting it
+                            right before restoring it is the useful order. */}
                         <Button
                           size="sm"
                           variant="secondary"
-                          icon={UserCheck}
-                          onClick={() => setPendingAction({ type: 'reactivate', person })}
+                          icon={Pencil}
+                          onClick={() => openEdit(person)}
                         >
-                          Reactivate
+                          Edit
                         </Button>
-                      )}
+                        {person.isActive ? (
+                          <Button
+                            size="sm"
+                            variant="danger-quiet"
+                            icon={UserX}
+                            onClick={() => setPendingAction({ type: 'deactivate', person })}
+                          >
+                            Deactivate
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            icon={UserCheck}
+                            onClick={() => setPendingAction({ type: 'reactivate', person })}
+                          >
+                            Reactivate
+                          </Button>
+                        )}
+                      </div>
                     </TD>
                   </TR>
                 ))}
@@ -449,17 +621,35 @@ export default function StaffList() {
       )}
 
       <Modal
-        isOpen={isFormOpen}
+        isOpen={formTarget !== null}
         onClose={closeForm}
-        title="Add staff account"
-        description="They sign in with this username. Instructors create cohorts; heads of department manage their departments."
+        title={editing ? 'Edit staff account' : 'Add staff account'}
+        description={
+          editing
+            ? `Editing ${editing.name}. Their password is set separately.`
+            : 'They sign in with this username. Instructors create cohorts; heads of department manage their departments.'
+        }
         footer={
           <>
+            {editing && (
+              <Button
+                variant="secondary"
+                // Away from the two actions it is not an alternative to, except on a
+                // phone, where there is no room for three across: there it takes a
+                // row of its own above them instead of being clipped.
+                className="w-full sm:mr-auto sm:w-auto"
+                icon={KeyRound}
+                onClick={openPasswordReset}
+                disabled={isSubmitting}
+              >
+                Reset password…
+              </Button>
+            )}
             <Button variant="secondary" onClick={closeForm} disabled={isSubmitting}>
               Cancel
             </Button>
             <Button type="submit" form="staff-form" isLoading={isSubmitting}>
-              Create account
+              {editing ? 'Save changes' : 'Create account'}
             </Button>
           </>
         }
@@ -467,102 +657,117 @@ export default function StaffList() {
         <form id="staff-form" onSubmit={submit} className="space-y-4">
           {formError && <Alert tone="error">{formError}</Alert>}
 
-          {/* Only an administrator can create heads of department; a HOD adds
-              instructors to their own departments. */}
-          {isAdmin && (
-            <SegmentedControl
-              label="Role"
-              stretch
-              value={form.role}
-              onChange={(role) => setForm((current) => ({ ...current, role }))}
-              options={[
-                { value: 'INSTRUCTOR', label: 'Instructor' },
-                { value: 'HOD', label: 'Head of Department' },
-              ]}
-            />
+          {/* A role is read from the token issued at sign-in and nothing re-checks
+              it, so say so here rather than let an admin believe a demotion took
+              hold the moment they saved it. */}
+          {editing && form.role !== editing.role && (
+            <Alert tone="warning" title="This takes effect when they next sign in">
+              {editing.name} keeps the permissions of{' '}
+              {editing.role === 'HOD' ? 'a head of department' : 'an instructor'} until they sign out
+              and back in — at most a day, when their current session expires.
+            </Alert>
           )}
 
-          <Field
-            label="Full name"
-            value={form.name}
-            onChange={updateField('name')}
-            placeholder="Ada Obi"
-            autoComplete="off"
-            required
+          <StaffFormFields
+            form={form}
+            setForm={setForm}
+            departments={departments}
+            isAdmin={isAdmin}
+            mode={editing ? 'edit' : 'create'}
           />
+        </form>
+      </Modal>
+
+      <Modal
+        isOpen={passwordTarget !== null}
+        onClose={cancelPasswordReset}
+        title="Reset password"
+        description={
+          passwordTarget
+            ? `Set a new password for ${passwordTarget.name} and pass it on to them.`
+            : undefined
+        }
+        footer={
+          <>
+            <Button variant="secondary" onClick={cancelPasswordReset} disabled={isResetting}>
+              Back
+            </Button>
+            <Button type="submit" form="reset-password-form" isLoading={isResetting}>
+              Change password
+            </Button>
+          </>
+        }
+      >
+        <form id="reset-password-form" onSubmit={submitPasswordReset} className="space-y-4">
+          {passwordError && <Alert tone="error">{passwordError}</Alert>}
+
+          {/* The other half of the same limitation as the role warning above: a
+              token is trusted until it expires, so this is a way back in rather
+              than a way to lock someone out. */}
+          <Alert tone="warning" title="This does not sign them out">
+            Anywhere they are already signed in stays signed in for up to a day. Deactivate the
+            account instead if the point is to stop them working now.
+          </Alert>
+
           <Field
-            label="Username"
-            hint="Lowercased automatically. Reusing a deactivated account's username restores it."
-            value={form.username}
-            onChange={updateField('username')}
-            placeholder="ada.obi"
-            autoComplete="off"
-            required
-          />
-          <Field
-            label="Email"
-            hint="Optional."
-            type="email"
-            value={form.email}
-            onChange={updateField('email')}
-            placeholder="ada.obi@neocloud.example"
-            autoComplete="off"
-          />
-          <Field
-            label="Temporary password"
+            label="New password"
             type="password"
-            value={form.password}
-            onChange={updateField('password')}
+            hint={`At least ${MIN_PASSWORD} characters.`}
+            value={passwordForm.newPassword}
+            onChange={(event) =>
+              setPasswordForm((current) => ({ ...current, newPassword: event.target.value }))
+            }
             autoComplete="new-password"
             required
           />
-
-          {isCreatingHod ? (
-            <fieldset>
-              <legend className="text-sm font-medium text-ink">
-                Departments they head
-                <span aria-hidden="true" className="ml-0.5 text-rose-600">
-                  *
-                </span>
-              </legend>
-              <p className="mt-0.5 text-xs text-ink-subtle">
-                They can manage instructors, cohorts and disputes in each one.
-              </p>
-              <div className="mt-2 space-y-1.5 overflow-hidden rounded-lg border border-line">
-                {departments.map((department) => (
-                  <label
-                    key={department.id}
-                    className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm transition-colors hover:bg-surface-raised"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={form.departmentIds.includes(department.id)}
-                      onChange={() => toggleFormDepartment(department.id)}
-                      className="h-4 w-4 rounded border-line-strong text-brand-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
-                    />
-                    <span className="text-ink">{department.name}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-          ) : (
-            <Field
-              as="select"
-              label="Department"
-              value={form.departmentId}
-              onChange={updateField('departmentId')}
-              required
-            >
-              <option value="">Select a department</option>
-              {departments.map((department) => (
-                <option key={department.id} value={department.id}>
-                  {department.name}
-                </option>
-              ))}
-            </Field>
-          )}
+          <Field
+            label="Confirm new password"
+            type="password"
+            value={passwordForm.confirmPassword}
+            onChange={(event) =>
+              setPasswordForm((current) => ({ ...current, confirmPassword: event.target.value }))
+            }
+            autoComplete="new-password"
+            required
+          />
         </form>
       </Modal>
+
+      <ConfirmDialog
+        isOpen={cohortWarning !== null}
+        onClose={cancelCohortWarning}
+        onConfirm={() => saveEdit(cohortWarning.person, { acknowledge: true })}
+        title="Leave these cohorts unassigned?"
+        confirmLabel="Save and unassign"
+        cancelLabel="Go back"
+        tone="danger"
+        isBusy={isSubmitting}
+      >
+        {cohortWarning && (
+          <>
+            <strong className="font-semibold text-ink">{cohortWarning.person.name}</strong> will no
+            longer be able to deliver{' '}
+            {cohortWarning.cohorts.length === 1
+              ? 'in the department this cohort belongs to'
+              : 'in the departments these cohorts belong to'}
+            , so {cohortWarning.cohorts.length === 1 ? 'it' : 'they'} will be left without an
+            instructor:
+            <ul className="my-3 divide-y divide-line overflow-hidden rounded-lg border border-line">
+              {cohortWarning.cohorts.map((cohort) => (
+                <li
+                  key={cohort.id}
+                  className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+                >
+                  <span className="font-medium text-ink">{cohort.name}</span>
+                  <span className="text-xs text-ink-subtle">{cohort.department}</span>
+                </li>
+              ))}
+            </ul>
+            Recorded progress and enrolments are preserved. Reassign{' '}
+            {cohortWarning.cohorts.length === 1 ? 'it' : 'them'} from the department page.
+          </>
+        )}
+      </ConfirmDialog>
 
       <ConfirmDialog
         isOpen={pendingAction?.type === 'deactivate'}
