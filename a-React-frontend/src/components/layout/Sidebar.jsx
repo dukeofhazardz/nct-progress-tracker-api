@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Flag, GraduationCap, LayoutDashboard, LogOut, Users, X } from 'lucide-react';
+import { BookOpen, Flag, GraduationCap, LayoutDashboard, LogOut, Users, X } from 'lucide-react';
 import { useAuth } from '../../context/authContext';
 import Avatar from '../ui/Avatar';
 import Brand from './Brand';
@@ -31,6 +31,14 @@ const managementMenu = [
     icon: Users,
     match: (path) => path.startsWith('/admin/staff'),
   },
+  {
+    name: 'Students',
+    path: '/admin/students',
+    icon: GraduationCap,
+    // Cannot collide with Staff's prefix: `/admin/staff` and `/admin/students`
+    // diverge at the fourth character.
+    match: (path) => path.startsWith('/admin/students'),
+  },
 ];
 
 const menus = {
@@ -44,7 +52,9 @@ const menus = {
     {
       name: 'My cohorts',
       path: '/instructor',
-      icon: GraduationCap,
+      // Not `GraduationCap`, which now marks the Students page: a HOD would see the
+      // same glyph twice. A cohort they deliver reads as a book.
+      icon: BookOpen,
       match: (path) => path.startsWith('/instructor'),
     },
   ],

@@ -36,6 +36,23 @@ export const tracker = {
   // Soft delete: the account is deactivated, never destroyed, so it can be restored.
   deactivateStaff: (id) => api.delete(`/staff/${id}`),
   reactivateStaff: (id) => api.patch(`/staff/${id}/reactivate`).then((response) => response.data),
+  // Student accounts. Separate endpoints from `/staff`, which 404s on a student, and
+  // scoped by department membership rather than by the single `departmentId` column a
+  // staff account has — a head of department sees a student who is a member of any
+  // department they head, and a student who joined none is visible only to an admin.
+  students: () => api.get('/students').then((response) => response.data),
+  // One student with every topic of every cohort they are in, the same per-course
+  // shape `studentProgress` answers with. 404 when outside the caller's scope.
+  student: (id) => api.get(`/students/${id}`).then((response) => response.data),
+  // Nothing is unwound: progress belongs to the cohort, so they stay on its roster
+  // and simply cannot sign in. Same stateless-token caveat as the staff routes.
+  deactivateStudent: (id) => api.delete(`/students/${id}`),
+  reactivateStudent: (id) =>
+    api.patch(`/students/${id}/reactivate`).then((response) => response.data),
+  // 204. Currently the only route back in for a student who has forgotten their
+  // password — there is no self-service reset.
+  resetStudentPassword: (id, newPassword) =>
+    api.patch(`/students/${id}/password`, { newPassword }),
   assignInstructor: (cohortId, instructorId) =>
     api.patch(`/cohorts/${cohortId}/instructor`, { instructorId }).then((response) => response.data),
   cohortStudents: (cohortId) =>

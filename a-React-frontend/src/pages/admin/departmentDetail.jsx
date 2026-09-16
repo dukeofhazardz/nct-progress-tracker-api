@@ -609,16 +609,29 @@ export default function DepartmentDetail() {
             <ul className="divide-y divide-line overflow-hidden rounded-lg border border-line">
               {roster.students.map((student) => (
                 <li key={student.id} className="flex items-center gap-3 bg-surface px-3 py-2.5">
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-100 text-[11px] font-bold text-brand-800">
-                    {initials(student.name)}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-ink">{student.name}</p>
-                    <p className="truncate text-xs text-ink-subtle">
-                      @{student.username}
-                      {student.email ? ` · ${student.email}` : ''}
-                    </p>
-                  </div>
+                  {/* The way through to one student's whole record — this modal used
+                      to be the only place a student appeared at all. */}
+                  <Link
+                    to={`/admin/students/${student.id}`}
+                    className="flex min-w-0 flex-1 items-center gap-3 rounded transition-colors hover:text-brand-700"
+                  >
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-100 text-[11px] font-bold text-brand-800">
+                      {initials(student.name)}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="flex items-center gap-2 truncate text-sm font-medium text-ink">
+                        {student.name}
+                        {/* Deactivating a student leaves them enrolled — progress
+                            belongs to the cohort — so they stay on the roster,
+                            tagged rather than quietly missing. */}
+                        {!student.isActive && <Badge tone="neutral">Deactivated</Badge>}
+                      </p>
+                      <p className="truncate text-xs text-ink-subtle">
+                        @{student.username}
+                        {student.email ? ` · ${student.email}` : ''}
+                      </p>
+                    </div>
+                  </Link>
                   <span
                     className="shrink-0 whitespace-nowrap text-xs text-ink-subtle"
                     title={formatDateTime(student.enrolledAt)}

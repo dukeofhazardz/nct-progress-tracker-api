@@ -3,7 +3,7 @@ import bcrypt from "bcrypt";
 import { prisma } from "../../lib/prisma";
 import { allow, AuthRequest, protect } from "../../shared/middleware/auth.middleware";
 import { asyncHandler } from "../../shared/async-handler";
-import { percent } from "../../shared/progress";
+import { percent, topicCountOf } from "../../shared/progress";
 import { avatarUrlOf, MIN_PASSWORD, profileOf, STAFF_FIELDS, staffDepartments } from "../../shared/profile";
 import { DisputeStatus, Role } from "../../generated/prisma/enums";
 
@@ -103,6 +103,46 @@ const topicsFor = (
   cohort: { curriculumVersion?: { items: Topic[] } | null },
   department: { curriculumVersions: { items: Topic[] }[] }
 ): Topic[] => cohort.curriculumVersion?.items ?? department.curriculumVersions[0]?.items ?? [];
+
+/**
+ * Every active course a student is enrolled in, with their cohort's own topic list
+ * resolved and each topic marked covered or not.
+ *
+ * Progress is recorded against the cohort rather than the enrolment — `Progress`
+ * keys on `cohortId` — so a student's progress simply *is* their cohort's, and two
+ * students in one cohort always read identically. There is nothing per-student to
+ * compute here, only their cohorts' lists to resolve.
+ *
+ * Shared by `/student/progress`, where a student reads their own, and
+ * `GET /students/:id`, where a manager reads someone's. The department comes back as
+ * `{ id, name }` so the manager's page can link through to it; the student's route
+ * flattens it to the bare name it has always answered with.
+ */
+const coursesOf = async (studentId: string) => {
+  const enrollments = await prisma.enrollment.findMany({
+    where: { studentId, cohort: { isActive: true } },
+    include: { cohort: { include: { department: { include: { curriculumVersions: CURRENT_VERSION } }, curriculumVersion: PINNED_VERSION, progress: true, instructor: { select: { name: true } } } } }
+  });
+
+  return enrollments
+    .map(({ cohort: c }) => {
+      // The list their own cohort is delivering — students are shown no version
+      // labels, so what they see is simply their topics.
+      const topics = topicsFor(c, c.department);
+      return {
+        cohort: {
+          id: c.id,
+          name: c.name,
+          department: { id: c.department.id, name: c.department.name },
+          instructor: c.instructor?.name || "Awaiting instructor assignment",
+          completedAt: c.completedAt
+        },
+        progressPercent: percent(c.progress.length, topics.length),
+        curriculum: topics.map(item => ({ ...item, isCompleted: c.progress.some(p => p.curriculumItemId === item.id) }))
+      };
+    })
+    .sort((a, b) => a.cohort.department.name.localeCompare(b.cohort.department.name));
+};
 
 router.get("/departments", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
   const scope = await scopeOf(req.user!);
@@ -545,6 +585,218 @@ router.get("/staff/:id", allow(...MANAGERS), asyncHandler(async (req: AuthReques
   res.json(await profileOf(target.id));
 }));
 
+/**
+ * Student accounts, for a manager. Until these routes existed a student appeared in
+ * exactly one place — the roster of a cohort, via `GET /cohorts/:id/students` — so
+ * anyone who had registered without being enrolled was invisible to the whole
+ * administration, and nobody could act on a student account at all.
+ *
+ * They are read and written separately from staff rather than through the same
+ * routes: `findManageableStaff` narrows to instructors and heads of department, and
+ * the two populations are scoped differently. See `findManageableStudent`.
+ */
+
+/**
+ * Shared authorisation for acting on one student — `findManageableStaff`'s sibling,
+ * scoped differently on purpose. A staff member has one `departmentId` column to
+ * test; a student's departments are `DepartmentMember` rows and there can be several,
+ * so a head of department is in scope when *any* of them overlaps theirs.
+ *
+ * A student who registered without choosing a department is therefore reachable by
+ * an administrator and by no head of department: nobody heads them.
+ *
+ * Out of scope is 404 and never 403, as everywhere else here. The row it returns
+ * carries `password`, so callers project before responding rather than spreading it.
+ */
+const findManageableStudent = async (req: AuthRequest, where: { isActive?: boolean } = {}) => {
+  const target = await prisma.user.findFirst({
+    where: { id: String(req.params.id), role: Role.STUDENT, ...where },
+    include: { memberOf: { select: { departmentId: true } } }
+  });
+  if (!target) return null;
+
+  const scope = await scopeOf(req.user!);
+  if (scope && !target.memberOf.some(m => scope.includes(m.departmentId))) return null;
+  return target;
+};
+
+/**
+ * Which of the three states a student is in, derived server-side so that a badge, a
+ * filter and a sort order cannot disagree about the same person.
+ *
+ * "Completed" means every active cohort they are enrolled in has been signed off by
+ * its instructor. `completedAt` is that signature, and
+ * `PATCH /instructor/cohorts/:id/complete` re-checks full coverage before setting it
+ * — so this is stricter than "every topic ticked": a cohort sitting at 100% that
+ * nobody has marked finished still reads in progress. Deriving it from coverage
+ * instead would contradict the instructor's own screen, so the client explains the
+ * gap in words rather than the server papering over it.
+ */
+const studentStatus = (cohorts: { completedAt: Date | null }[]) =>
+  !cohorts.length ? "NOT_ENROLLED" : cohorts.every(c => c.completedAt) ? "COMPLETED" : "IN_PROGRESS";
+
+/** The cohort columns a student's aggregate needs — counts only, no topic titles. */
+const STUDENT_COHORT = {
+  id: true,
+  name: true,
+  completedAt: true,
+  department: { select: { id: true, name: true, curriculumVersions: { orderBy: { version: "desc" }, take: 1, select: { _count: { select: { items: true } } } } } },
+  curriculumVersion: { select: { _count: { select: { items: true } } } },
+  _count: { select: { progress: true } }
+} as const;
+
+/**
+ * Every student a manager may see: all of them for an administrator, and for a head
+ * of department those holding a membership in a department they head.
+ *
+ * One row per student rather than one per enrolment — a student taking courses in two
+ * departments is one person to administer — with their cohorts nested and their
+ * progress aggregated across them.
+ */
+router.get("/students", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
+  const scope = await scopeOf(req.user!);
+  const students = await prisma.user.findMany({
+    where: { role: Role.STUDENT, ...(scope ? { memberOf: { some: { departmentId: { in: scope } } } } : {}) },
+    select: {
+      ...STAFF_FIELDS,
+      memberOf: { select: { department: { select: { id: true, name: true } } } },
+      // `memberships` is `Enrollment` under its relation name on `User`. Archived
+      // cohorts are left out, matching every other count in the app.
+      memberships: { where: { cohort: { isActive: true } }, select: { cohort: { select: STUDENT_COHORT } } }
+    },
+    orderBy: { name: "asc" }
+  });
+
+  res.json(students.map(s => {
+    // `departmentId` is dropped rather than sent: it is the single department an
+    // *instructor* works in and is always null for a student, whose departments are
+    // the memberships `POST /instructor/cohorts/:cohortId/students` maintains.
+    const { departmentId, memberOf, memberships, ...rest } = s;
+    const cohorts = memberships.map(m => m.cohort);
+    // Cohorts pinned to different versions have different totals, so the denominator
+    // is the sum of each cohort's own list length rather than cohorts × current
+    // topics — the same reasoning `GET /departments` spells out.
+    const topicCount = cohorts.reduce((n, c) => n + topicCountOf(c), 0);
+    const topicsCovered = cohorts.reduce((n, c) => n + c._count.progress, 0);
+
+    return {
+      ...rest,
+      departments: memberOf.map(m => m.department),
+      cohorts: cohorts.map(c => ({ id: c.id, name: c.name, department: { id: c.department.id, name: c.department.name }, completedAt: c.completedAt })),
+      status: studentStatus(cohorts),
+      topicCount,
+      topicsCovered,
+      progressPercent: percent(topicsCovered, topicCount)
+    };
+  }));
+}));
+
+/**
+ * One student, with their courses resolved topic by topic — the same view of their
+ * own progress the student gets, read by a manager.
+ *
+ * `{}` rather than `{ isActive: true }` so a deactivated account can still be
+ * reviewed, matching `GET /staff/:id`.
+ */
+router.get("/students/:id", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
+  const target = await findManageableStudent(req);
+  if (!target) return res.status(404).json({ message: "Student not found" });
+
+  const [student, courses] = await Promise.all([
+    // Re-read through an explicit projection rather than reusing the row above,
+    // which carries `password` — the reason `GET /staff/:id` answers through
+    // `profileOf`. A student has no way to upload a picture yet, so `avatarUrl` is
+    // null today; it is here so the client renders one shape for everybody.
+    prisma.user.findUniqueOrThrow({
+      where: { id: target.id },
+      select: { ...STAFF_FIELDS, avatarPath: true, memberOf: { select: { department: { select: { id: true, name: true } } } } }
+    }),
+    coursesOf(target.id)
+  ]);
+
+  const { departmentId, avatarPath, memberOf, ...rest } = student;
+  // Counted from the resolved lists rather than from `_count.progress`, so this page
+  // and the row in the list cannot disagree. The two agree because recording the
+  // first topic pins the cohort: its progress rows always belong to the list below.
+  const topicCount = courses.reduce((n, c) => n + c.curriculum.length, 0);
+  const topicsCovered = courses.reduce((n, c) => n + c.curriculum.filter(item => item.isCompleted).length, 0);
+
+  res.json({
+    ...rest,
+    avatarUrl: avatarUrlOf(avatarPath),
+    departments: memberOf.map(m => m.department),
+    status: studentStatus(courses.map(c => c.cohort)),
+    topicCount,
+    topicsCovered,
+    progressPercent: percent(topicsCovered, topicCount),
+    courses
+  });
+}));
+
+/**
+ * Deactivate a student. A soft delete: the row is kept so it can be restored, and
+ * because enrolments, recorded progress and disputes all point at it.
+ *
+ * Nothing needs unwinding, unlike `DELETE /staff/:id` which unassigns every cohort
+ * the person holds. Progress is recorded against the cohort rather than the
+ * enrolment, so leaving a deactivated student enrolled changes no number anyone
+ * sees. `login` already refuses an inactive account, and enrolment only finds active
+ * students, so the flag is enforced at both doors and restoring is one field.
+ *
+ * They do still appear on their cohort's roster, tagged inactive — the instructor who
+ * taught them is better served by seeing them than by their quietly vanishing.
+ *
+ * ⚠️ It does not end the sessions they already have, for the reason `PATCH
+ * /staff/:id/password` records: nothing in `protect` checks `isActive`.
+ */
+router.delete("/students/:id", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
+  const target = await findManageableStudent(req, { isActive: true });
+  if (!target) return res.status(404).json({ message: "Student not found" });
+
+  await prisma.user.update({ where: { id: target.id }, data: { isActive: false } });
+  res.status(204).send();
+}));
+
+router.patch("/students/:id/reactivate", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
+  const target = await findManageableStudent(req);
+  if (!target) return res.status(404).json({ message: "Student not found" });
+  if (target.isActive) return res.status(409).json({ message: "That account is already active" });
+
+  // Their password, memberships and enrolments are untouched, so they pick up
+  // exactly where they left off.
+  res.json(await prisma.user.update({ where: { id: target.id }, data: { isActive: true }, select: { ...STAFF_FIELDS } }));
+}));
+
+/**
+ * A manager sets a new password for a student.
+ *
+ * This is currently the *only* way back in for a student who forgets theirs: `/auth`
+ * exposes only `register` and `login`, there is no reset-by-email flow, and
+ * `PATCH /me/password` needs the password they have lost. Without this they stay
+ * locked out permanently.
+ *
+ * A head of department may do it for students in their own departments. Unlike the
+ * staff reset, which only formalised a workaround they already had, this is new
+ * power — bounded to one student in a department they head. Narrowing it to
+ * administrators later is `allow(Role.ADMIN)` here and nothing else.
+ *
+ * ⚠️ It does not sign the person out; see `PATCH /staff/:id/password`.
+ */
+router.patch("/students/:id/password", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
+  // `{}` so a password can be set before the account is reactivated.
+  const target = await findManageableStudent(req);
+  if (!target) return res.status(404).json({ message: "Student not found" });
+
+  const { newPassword } = req.body;
+  if (!newPassword) return res.status(400).json({ message: "A new password is required" });
+  if (newPassword.length < MIN_PASSWORD) return res.status(400).json({ message: `The new password must be at least ${MIN_PASSWORD} characters` });
+  // No "must differ from the current one" check, unlike `PATCH /me/password`: here it
+  // would tell a manager whether they had guessed a student's existing password.
+
+  await prisma.user.update({ where: { id: target.id }, data: { password: await bcrypt.hash(newPassword, 10) } });
+  res.status(204).send();
+}));
+
 router.patch("/cohorts/:id/instructor", allow(...MANAGERS), asyncHandler(async (req: AuthRequest, res) => {
   const cohort = await prisma.cohort.findUnique({ where: { id: String(req.params.id) } });
   if (!cohort || !cohort.isActive) return res.status(404).json({ message: "Active cohort not found" });
@@ -746,25 +998,10 @@ router.patch("/instructor/cohorts/:cohortId/reopen", allow(Role.INSTRUCTOR, Role
  * are not in any active cohort yet.
  */
 router.get("/student/progress", allow(Role.STUDENT), asyncHandler(async (req: AuthRequest, res) => {
-  const enrollments = await prisma.enrollment.findMany({
-    where: { studentId: req.user!.id, cohort: { isActive: true } },
-    include: { cohort: { include: { department: { include: { curriculumVersions: CURRENT_VERSION } }, curriculumVersion: PINNED_VERSION, progress: true, instructor: { select: { name: true } } } } }
-  });
-
-  res.json(
-    enrollments
-      .map(({ cohort: c }) => {
-        // The list their own cohort is delivering — students are shown no version
-        // labels, so what they see is simply their topics.
-        const topics = topicsFor(c, c.department);
-        return {
-          cohort: { id: c.id, name: c.name, department: c.department.name, instructor: c.instructor?.name || "Awaiting instructor assignment", completedAt: c.completedAt },
-          progressPercent: percent(c.progress.length, topics.length),
-          curriculum: topics.map(item => ({ ...item, isCompleted: c.progress.some(p => p.curriculumItemId === item.id) }))
-        };
-      })
-      .sort((a, b) => a.cohort.department.localeCompare(b.cohort.department))
-  );
+  const courses = await coursesOf(req.user!.id);
+  // The department is flattened to its name: this response predates the manager's
+  // view of the same data, and the student's page renders the value directly.
+  res.json(courses.map(course => ({ ...course, cohort: { ...course.cohort, department: course.cohort.department.name } })));
 }));
 
 router.post("/student/disputes", allow(Role.STUDENT), asyncHandler(async (req: AuthRequest, res) => {

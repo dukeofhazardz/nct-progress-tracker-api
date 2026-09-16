@@ -1,7 +1,7 @@
 import { prisma } from "../lib/prisma";
 import { publicUrl } from "../lib/supabase";
 import { Role } from "../generated/prisma/enums";
-import { percent } from "./progress";
+import { percent, topicCountOf } from "./progress";
 
 /**
  * The scalar columns of `User` that are safe to serialise.
@@ -151,10 +151,7 @@ export const profileOf = async (userId: string) => {
     avatarUrl: avatarUrlOf(avatarPath),
     departments: staffDepartments({ role: rest.role, department, memberOf }),
     cohorts: cohorts.map(c => {
-      // A cohort in progress reports against the list it was pinned to, which may
-      // be older than what its department has published since. An unpinned cohort
-      // has not started, so it follows the department's current version.
-      const topicCount = c.curriculumVersion?._count.items ?? c.department.curriculumVersions[0]?._count.items ?? 0;
+      const topicCount = topicCountOf(c);
       const topicsCovered = c._count.progress;
       return {
         id: c.id,
