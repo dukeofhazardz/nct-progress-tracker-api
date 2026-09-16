@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import {
   BookOpen,
-  Check,
   ChevronDown,
   ChevronRight,
   Flag,
@@ -19,6 +18,7 @@ import PageHeader from '../../components/ui/PageHeader';
 import Panel from '../../components/ui/Panel';
 import ProgressBar from '../../components/ui/ProgressBar';
 import Skeleton from '../../components/ui/Skeleton';
+import TopicTimeline from '../../components/curriculum/TopicTimeline';
 import DisputeModal from './Disputemodal';
 
 export default function StudentProgress() {
@@ -188,71 +188,25 @@ export default function StudentProgress() {
                       description="This department's curriculum has not been published. Check back shortly."
                     />
                   ) : (
-                    <ol className="px-5 py-5">
-                      {curriculum.map((item, index) => {
-                        const isLast = index === curriculum.length - 1;
-                        const isReported = reportedIds.has(item.id);
-
-                        return (
-                          <li key={item.id} className="relative flex gap-4 pb-5 last:pb-0">
-                            {!isLast && (
-                              <span
-                                aria-hidden="true"
-                                className="absolute bottom-0 left-[11px] top-7 w-px bg-line"
-                              />
-                            )}
-
-                            <span
-                              aria-hidden="true"
-                              className={`relative z-10 mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
-                                item.isCompleted
-                                  ? 'bg-emerald-500 text-white'
-                                  : 'border-2 border-line-strong bg-surface'
-                              }`}
-                            >
-                              {item.isCompleted && (
-                                <Check size={13} strokeWidth={3} aria-hidden="true" />
-                              )}
-                            </span>
-
-                            <div className="flex min-w-0 flex-1 flex-wrap items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="text-xs font-medium uppercase tracking-wide text-ink-faint">
-                                  Topic {index + 1}
-                                  <span className="sr-only">
-                                    {item.isCompleted ? ' — covered' : ' — not yet covered'}
-                                  </span>
-                                </p>
-                                <h3
-                                  className={`mt-0.5 text-sm font-semibold ${
-                                    item.isCompleted ? 'text-ink' : 'text-ink-subtle'
-                                  }`}
-                                >
-                                  {item.title}
-                                </h3>
-                              </div>
-
-                              {item.isCompleted &&
-                                (isReported ? (
-                                  <Badge tone="warning">Reported</Badge>
-                                ) : (
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    icon={Flag}
-                                    onClick={() =>
-                                      setSelectedItem({ topic: item, cohortId: cohort.id })
-                                    }
-                                    className="shrink-0"
-                                  >
-                                    Report issue
-                                  </Button>
-                                ))}
-                            </div>
-                          </li>
-                        );
-                      })}
-                    </ol>
+                    <TopicTimeline
+                      curriculum={curriculum}
+                      renderAction={(item) =>
+                        item.isCompleted &&
+                        (reportedIds.has(item.id) ? (
+                          <Badge tone="warning">Reported</Badge>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            icon={Flag}
+                            onClick={() => setSelectedItem({ topic: item, cohortId: cohort.id })}
+                            className="shrink-0"
+                          >
+                            Report issue
+                          </Button>
+                        ))
+                      }
+                    />
                   )}
                 </div>
               )}

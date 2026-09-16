@@ -22,13 +22,13 @@ import Badge from '../../components/ui/Badge';
 import Button from '../../components/ui/Button';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import EmptyState from '../../components/ui/EmptyState';
-import Field from '../../components/ui/Field';
 import Modal from '../../components/ui/Modal';
 import PageHeader from '../../components/ui/PageHeader';
 import Panel from '../../components/ui/Panel';
 import SearchInput from '../../components/ui/SearchInput';
 import SegmentedControl from '../../components/ui/SegmentedControl';
 import Skeleton from '../../components/ui/Skeleton';
+import PasswordResetModal from '../../components/account/PasswordResetModal';
 import StaffFormFields from '../../components/staff/StaffFormFields';
 import { Table, TBody, TD, TH, THead, TR } from '../../components/ui/Table';
 
@@ -41,11 +41,6 @@ const emptyForm = {
   departmentId: '',
   departmentIds: [],
 };
-
-const emptyPasswordForm = { newPassword: '', confirmPassword: '' };
-
-// Matches `MIN_PASSWORD` in the API's shared profile helpers.
-const MIN_PASSWORD = 8;
 
 // Stable reference so useListControls' memo does not recompute on every render.
 const EMPTY = [];
@@ -83,9 +78,6 @@ export default function StaffList() {
   const [cohortWarning, setCohortWarning] = useState(null); // { person, cohorts }
 
   const [passwordTarget, setPasswordTarget] = useState(null);
-  const [passwordForm, setPasswordForm] = useState(emptyPasswordForm);
-  const [passwordError, setPasswordError] = useState('');
-  const [isResetting, setIsResetting] = useState(false);
 
   const [pendingAction, setPendingAction] = useState(null); // { type, person }
   const [isActing, setIsActing] = useState(false);
@@ -257,51 +249,27 @@ export default function StaffList() {
     // edit form and back, not a discard.
     setPasswordTarget(editing);
     setFormTarget(null);
-    setPasswordForm(emptyPasswordForm);
-    setPasswordError('');
   };
 
   const cancelPasswordReset = () => {
     setFormTarget(passwordTarget);
     setPasswordTarget(null);
-    setPasswordForm(emptyPasswordForm);
-    setPasswordError('');
   };
 
-  const submitPasswordReset = async (event) => {
-    event.preventDefault();
-
-    // Checked here as well as by the API so a typo costs no round trip; the
-    // confirmation field is the client's alone — only one password is sent.
-    if (passwordForm.newPassword.length < MIN_PASSWORD) {
-      setPasswordError(`The new password must be at least ${MIN_PASSWORD} characters.`);
-      return;
-    }
-    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-      setPasswordError('The two passwords do not match.');
-      return;
-    }
-
-    setIsResetting(true);
-    setPasswordError('');
-
-    try {
-      await tracker.resetStaffPassword(passwordTarget.id, passwordForm.newPassword);
-      // Only for the Last updated column — nothing else about the row moves.
-      await reload({ quiet: true });
-      setNotice(
-        `${passwordTarget.name}'s password has been changed. Pass it on to them, and ask them to set their own from their profile.`,
-      );
-      setPasswordTarget(null);
-      setPasswordForm(emptyPasswordForm);
-      closeForm();
-    } catch (requestError) {
-      setPasswordError(
-        requestError.response?.data?.message || 'Could not change the password.',
-      );
-    } finally {
-      setIsResetting(false);
-    }
+  /**
+   * The modal validates and reports its own failures; what belongs here is what
+   * happens to the list afterwards. Throwing back to it is deliberate — a rejected
+   * request must render inside the modal, where the fields still are.
+   */
+  const submitPasswordReset = async (newPassword) => {
+    await tracker.resetStaffPassword(passwordTarget.id, newPassword);
+    // Only for the Last updated column — nothing else about the row moves.
+    await reload({ quiet: true });
+    setNotice(
+      `${passwordTarget.name}'s password has been changed. Pass it on to them, and ask them to set their own from their profile.`,
+    );
+    setPasswordTarget(null);
+    closeForm();
   };
 
   const runPendingAction = async () => {
@@ -678,60 +646,17 @@ export default function StaffList() {
         </form>
       </Modal>
 
-      <Modal
-        isOpen={passwordTarget !== null}
-        onClose={cancelPasswordReset}
-        title="Reset password"
-        description={
-          passwordTarget
-            ? `Set a new password for ${passwordTarget.name} and pass it on to them.`
-            : undefined
-        }
-        footer={
-          <>
-            <Button variant="secondary" onClick={cancelPasswordReset} disabled={isResetting}>
-              Back
-            </Button>
-            <Button type="submit" form="reset-password-form" isLoading={isResetting}>
-              Change password
-            </Button>
-          </>
-        }
-      >
-        <form id="reset-password-form" onSubmit={submitPasswordReset} className="space-y-4">
-          {passwordError && <Alert tone="error">{passwordError}</Alert>}
-
-          {/* The other half of the same limitation as the role warning above: a
-              token is trusted until it expires, so this is a way back in rather
-              than a way to lock someone out. */}
-          <Alert tone="warning" title="This does not sign them out">
-            Anywhere they are already signed in stays signed in for up to a day. Deactivate the
-            account instead if the point is to stop them working now.
-          </Alert>
-
-          <Field
-            label="New password"
-            type="password"
-            hint={`At least ${MIN_PASSWORD} characters.`}
-            value={passwordForm.newPassword}
-            onChange={(event) =>
-              setPasswordForm((current) => ({ ...current, newPassword: event.target.value }))
-            }
-            autoComplete="new-password"
-            required
-          />
-          <Field
-            label="Confirm new password"
-            type="password"
-            value={passwordForm.confirmPassword}
-            onChange={(event) =>
-              setPasswordForm((current) => ({ ...current, confirmPassword: event.target.value }))
-            }
-            autoComplete="new-password"
-            required
-          />
-        </form>
-      </Modal>
+      {/* Rendered only when there is a target, so the modal owns its two fields and
+          they reset with it. One modal at a time throughout: `Modal` traps focus,
+          and two traps would fight over it. */}
+      {passwordTarget && (
+        <PasswordResetModal
+          person={passwordTarget}
+          onClose={cancelPasswordReset}
+          cancelLabel="Back"
+          onSubmit={submitPasswordReset}
+        />
+      )}
 
       <ConfirmDialog
         isOpen={cohortWarning !== null}

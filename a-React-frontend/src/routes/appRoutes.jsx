@@ -8,6 +8,8 @@ import DepartmentDetail from '../pages/admin/departmentDetail';
 import DisputesList from '../pages/admin/disputeList';
 import StaffList from '../pages/admin/StaffList';
 import StaffProfile from '../pages/admin/StaffProfile';
+import StudentList from '../pages/admin/StudentList';
+import StudentProfile from '../pages/admin/StudentProfile';
 import InstructorDashboard from '../pages/instructor/InstructorDashboard';
 import MyProfile from '../pages/profile/MyProfile';
 import StudentProgress from '../pages/Student/Studentprogress';
@@ -42,6 +44,11 @@ export default function AppRoutes() {
         <Route path="/admin/disputes" element={<DisputesList />} />
         <Route path="/admin/staff" element={<StaffList />} />
         <Route path="/admin/staff/:id" element={<StaffProfile />} />
+        {/* Both pages are scoped by the server: a head of department is answered
+            only the students holding a membership in a department they head, and a
+            student outside that set is 404 rather than 403. */}
+        <Route path="/admin/students" element={<StudentList />} />
+        <Route path="/admin/students/:id" element={<StudentProfile />} />
       </Route>
 
       {/* Every staff role reaches their own profile from the user menu. The
